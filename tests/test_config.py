@@ -1,9 +1,10 @@
 """Tests for certbundle.config — YAML loading and validation."""
 
 import os
+import unittest.mock as mock
 import pytest
 
-from certbundle.config import load_config, Config, ConfigError
+from certbundle.config import load_config, Config, ConfigError, _nearest_existing_dir
 
 
 class TestLoadConfig:
@@ -144,3 +145,93 @@ class TestProfileDefaults:
             )
         cfg = load_config(path)
         assert cfg.profiles["p"].rehash == "auto"
+
+
+class TestStagingDeviceCheck:
+    def _write_cfg(self, tmp_path, pem_dir, output_path, staging_path=None):
+        staging_line = (
+            "    staging_path: {}\n".format(staging_path) if staging_path else ""
+        )
+        path = str(tmp_path / "config.yaml")
+        with open(path, "w") as fh:
+            fh.write(
+                "version: 1\n"
+                "sources:\n"
+                "  s:\n"
+                "    type: local\n"
+                "    path: {pem_dir}\n"
+                "profiles:\n"
+                "  p:\n"
+                "    sources: [s]\n"
+                "    output_path: {out}\n"
+                "{staging}"
+                "    atomic: true\n".format(
+                    pem_dir=pem_dir, out=output_path, staging=staging_line
+                )
+            )
+        return path
+
+    def test_same_device_no_warning(self, tmp_path, pem_dir, caplog):
+        """output and staging on the same filesystem → no warning."""
+        import logging
+        out = str(tmp_path / "out")
+        stg = str(tmp_path / "out.staging")
+        path = self._write_cfg(tmp_path, pem_dir, out, stg)
+        with caplog.at_level(logging.WARNING, logger="certbundle.config"):
+            load_config(path)
+        assert "different filesystem" not in caplog.text
+
+    def test_cross_device_emits_warning(self, caplog):
+        """output and staging resolving to different st_dev → warning logged."""
+        import logging
+        from certbundle.config import _check_staging_device
+
+        # Patch _nearest_existing_dir so os.stat is only called with known paths,
+        # then return different st_dev values to simulate a cross-device config.
+        fake_out_dir = "/fake/out_anchor"
+        fake_stg_dir = "/fake/stg_anchor"
+        stat_map = {
+            fake_out_dir: mock.Mock(st_dev=100),
+            fake_stg_dir: mock.Mock(st_dev=200),
+        }
+
+        with mock.patch(
+            "certbundle.config._nearest_existing_dir",
+            side_effect=[fake_out_dir, fake_stg_dir],
+        ):
+            with mock.patch(
+                "certbundle.config.os.stat",
+                side_effect=lambda p: stat_map[p],
+            ):
+                with caplog.at_level(logging.WARNING, logger="certbundle.config"):
+                    _check_staging_device("/fake/out", "/fake/staging", "myprofile")
+
+        assert "different filesystem" in caplog.text
+
+    def test_nearest_existing_dir_finds_root(self, tmp_path):
+        deep = str(tmp_path / "a" / "b" / "c" / "d")
+        result = _nearest_existing_dir(deep)
+        assert os.path.isdir(result)
+        assert str(tmp_path) in result
+
+    def test_atomic_false_skips_check(self, tmp_path, pem_dir):
+        """When atomic: false, _check_staging_device must never be called."""
+        path = str(tmp_path / "config.yaml")
+        with open(path, "w") as fh:
+            fh.write(
+                "version: 1\n"
+                "sources:\n"
+                "  s:\n"
+                "    type: local\n"
+                "    path: {pem_dir}\n"
+                "profiles:\n"
+                "  p:\n"
+                "    sources: [s]\n"
+                "    output_path: {out}\n"
+                "    atomic: false\n".format(
+                    pem_dir=pem_dir, out=str(tmp_path / "out")
+                )
+            )
+        with mock.patch("certbundle.config._check_staging_device") as mock_check:
+            load_config(path)
+        mock_check.assert_not_called()

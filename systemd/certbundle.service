@@ -1,12 +1,12 @@
 [Unit]
-Description=certbundle — CA certificate directory refresh
-Documentation=https://github.com/your-org/certbundle
+Description=crabctl — CA certificate directory refresh
+Documentation=https://github.com/snafus/crab-certbundle
 # Wants network-online so IGTF/CRL downloads succeed when sourcing from URLs.
 Wants=network-online.target
 After=network-online.target
 # Emit an error if this service is still running when the timer fires again.
 # The timer's RandomizedDelaySec should exceed the expected run time.
-ConditionPathExists=/etc/certbundle/config.yaml
+ConditionPathExists=/etc/crab/config.yaml
 
 [Service]
 Type=oneshot
@@ -16,28 +16,28 @@ User=root
 Group=root
 
 # The main build command.  Adjust --config if your config lives elsewhere.
-ExecStart=/usr/local/bin/certbundle --config /etc/certbundle/config.yaml build
+ExecStart=/usr/bin/crabctl --config /etc/crab/config.yaml build
 
 # Optionally validate after building:
-ExecStartPost=/usr/local/bin/certbundle --config /etc/certbundle/config.yaml validate
+ExecStartPost=/usr/bin/crabctl --config /etc/crab/config.yaml validate
 
 # Capture full stdout+stderr in the journal.
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=certbundle
+SyslogIdentifier=crabctl
 
 # Resource limits — the tool is not CPU or memory intensive.
 MemoryMax=256M
 TimeoutStartSec=600
 
-# Harden the service — certbundle only needs to write its output directories.
+# Harden the service — crabctl only needs to write its output directories.
 # Adjust ReadWritePaths= if your output_path / staging_path differ from these.
 ProtectSystem=strict
 ReadWritePaths=/etc/grid-security/certificates
-ReadWritePaths=/etc/certbundle
-ReadWritePaths=/var/lib/certbundle
-ReadWritePaths=/var/cache/certbundle
-ReadWritePaths=/var/log/certbundle
+ReadWritePaths=/etc/crab
+ReadWritePaths=/var/lib/crab
+ReadWritePaths=/var/cache/crab
+ReadWritePaths=/var/log/crab
 PrivateTmp=true
 NoNewPrivileges=true
 

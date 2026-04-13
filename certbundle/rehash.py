@@ -185,11 +185,11 @@ def _issuer_hash_via_pyopenssl(pem_data):
 # subprocess strategy
 # --------------------------------------------------------------------------
 
-def _hash_via_subprocess(pem_data):
-    # type: (bytes) -> Optional[str]
+def _run_openssl_hash(pem_data, flag):
+    # type: (bytes, str) -> Optional[str]
     try:
         result = subprocess.run(
-            ["openssl", "x509", "-hash", "-noout"],
+            ["openssl", "x509", flag, "-noout"],
             input=pem_data,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -200,27 +200,18 @@ def _hash_via_subprocess(pem_data):
             if re.match(r"^[0-9a-f]{8}$", raw):
                 return raw
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        logger.debug("openssl subprocess hash failed: %s", exc)
+        logger.debug("openssl subprocess hash failed (%s): %s", flag, exc)
     return None
+
+
+def _hash_via_subprocess(pem_data):
+    # type: (bytes) -> Optional[str]
+    return _run_openssl_hash(pem_data, "-hash")
 
 
 def _issuer_hash_via_subprocess(pem_data):
     # type: (bytes) -> Optional[str]
-    try:
-        result = subprocess.run(
-            ["openssl", "x509", "-issuer_hash", "-noout"],
-            input=pem_data,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            raw = result.stdout.decode().strip()
-            if re.match(r"^[0-9a-f]{8}$", raw):
-                return raw
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        logger.debug("openssl issuer hash subprocess failed: %s", exc)
-    return None
+    return _run_openssl_hash(pem_data, "-issuer_hash")
 
 
 # --------------------------------------------------------------------------

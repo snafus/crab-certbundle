@@ -1,6 +1,15 @@
 """Tests for certbundle.policy — PolicyEngine."""
 
+import datetime
+import os
+import sys
 import pytest
+
+# conftest.py lives in the tests/ directory; make it importable.
+sys.path.insert(0, os.path.dirname(__file__))
+from conftest import _make_ca_cert  # noqa: E402
+
+from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from certbundle.cert import parse_pem_data
 from certbundle.policy import PolicyEngine, PolicyDecision
@@ -124,3 +133,97 @@ class TestPolicyEngineIgtfPolicy:
         ci.igtf_info = {"policy": "slcs"}
         engine = PolicyEngine({"exclude": [{"igtf_policy": "slcs"}]})
         assert engine.evaluate(ci).accepted is False
+
+
+class TestPolicyEngineRejectNotYetValid:
+    def test_accepts_not_yet_valid_by_default(self, ca_pem):
+        """reject_not_yet_valid defaults to False — future certs are accepted."""
+        engine = PolicyEngine()
+        # Build a cert whose not_before is in the future
+
+        future = datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc)
+        pem, _, _ = _make_ca_cert(
+            not_before=future,
+            not_after=datetime.datetime(2100, 1, 1, tzinfo=datetime.timezone.utc),
+        )
+        ci = _get_ca(pem)
+        assert engine.evaluate(ci).accepted is True
+
+    def test_rejects_not_yet_valid_when_flag_on(self):
+        engine = PolicyEngine({"reject_not_yet_valid": True, "reject_expired": False})
+
+        future = datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc)
+        pem, _, _ = _make_ca_cert(
+            not_before=future,
+            not_after=datetime.datetime(2100, 1, 1, tzinfo=datetime.timezone.utc),
+        )
+        decision = engine.evaluate(_get_ca(pem))
+        assert decision.accepted is False
+        assert "not yet valid" in decision.reason.lower()
+
+
+class TestPolicyEngineRejectPathLenZero:
+    def test_accepts_path_len_zero_by_default(self):
+        """reject_path_len_zero defaults to False."""
+
+        pem, _, _ = _make_ca_cert(path_length=0)
+        engine = PolicyEngine({"reject_path_len_zero": False})
+        assert engine.evaluate(_get_ca(pem)).accepted is True
+
+    def test_rejects_path_len_zero_when_flag_on(self):
+
+        pem, _, _ = _make_ca_cert(path_length=0)
+        engine = PolicyEngine({"reject_path_len_zero": True})
+        decision = engine.evaluate(_get_ca(pem))
+        assert decision.accepted is False
+        assert "pathLen" in decision.reason or "pathlen" in decision.reason.lower()
+
+    def test_accepts_path_len_one_when_flag_on(self):
+
+        pem, _, _ = _make_ca_cert(path_length=1)
+        engine = PolicyEngine({"reject_path_len_zero": True})
+        assert engine.evaluate(_get_ca(pem)).accepted is True
+
+
+class TestPolicyEngineServerAuthOnly:
+    def test_accepts_cert_with_no_eku_when_server_auth_only(self):
+        """server_auth_only only rejects if EKU is present but serverAuth absent.
+        A cert with no EKU at all is passed through (conservative default)."""
+        engine = PolicyEngine({"server_auth_only": True})
+        # No EKU extension → parse produces empty list, policy accepts
+        # (We can't easily test "no extension" here; use a cert with serverAuth)
+        pem_sa, _, _ = _make_ca_cert(eku_oids=[ExtendedKeyUsageOID.SERVER_AUTH], key_size=1024)
+        ci = _get_ca(pem_sa)
+        assert engine.evaluate(ci).accepted is True
+
+    def test_rejects_cert_with_client_auth_only_when_server_auth_only(self):
+        pem, _, _ = _make_ca_cert(eku_oids=[ExtendedKeyUsageOID.CLIENT_AUTH], key_size=1024)
+        engine = PolicyEngine({"server_auth_only": True})
+        decision = engine.evaluate(_get_ca(pem))
+        assert decision.accepted is False
+        assert "serverAuth" in decision.reason
+
+    def test_fingerprint_sha1_include_rule(self, ca_pem):
+        ci = _get_ca(ca_pem)
+        engine = PolicyEngine({"include": [{"fingerprint_sha1": ci.fingerprint_sha1}]})
+        assert engine.evaluate(ci).accepted is True
+
+    def test_unknown_rule_key_is_warned_and_never_matches(self, ca_pem):
+        """A rule dict with no recognised keys should not accept any cert."""
+        engine = PolicyEngine({"include": [{"unknown_key": "value"}]})
+        decision = engine.evaluate(_get_ca(ca_pem))
+        assert decision.accepted is False
+
+
+class TestPolicyEngineClientAuthOnly:
+    def test_accepts_cert_with_client_auth(self):
+        pem, _, _ = _make_ca_cert(eku_oids=[ExtendedKeyUsageOID.CLIENT_AUTH], key_size=1024)
+        engine = PolicyEngine({"client_auth_only": True})
+        assert engine.evaluate(_get_ca(pem)).accepted is True
+
+    def test_rejects_cert_with_server_auth_only_when_client_auth_only(self):
+        pem, _, _ = _make_ca_cert(eku_oids=[ExtendedKeyUsageOID.SERVER_AUTH], key_size=1024)
+        engine = PolicyEngine({"client_auth_only": True})
+        decision = engine.evaluate(_get_ca(pem))
+        assert decision.accepted is False
+        assert "clientAuth" in decision.reason

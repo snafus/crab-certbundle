@@ -31,7 +31,7 @@ directory that can be used directly by any software reading
 - Diff mode — show what would change before committing a rebuild
 - Dry-run mode
 - JSON output for all list/diff/validate commands
-- Python 3.6.8+ compatible (EL7, Rocky 8, RHEL8 system Python)
+- Python 3.6.8+ compatible (Rocky 8 / EL8, Rocky 9 / EL9)
 - No dependency on OSG, VOMS, or grid middleware packages
 
 ---
@@ -81,20 +81,20 @@ pip3 install -e ".[dev]"
 1. Create a config file (see `examples/`):
 
 ```bash
-cp examples/config-minimal.yaml /etc/certbundle/config.yaml
+cp examples/config-minimal.yaml /etc/crab/config.yaml
 # Edit to set your source paths and output_path
 ```
 
 2. Build the output directory:
 
 ```bash
-certbundle --config /etc/certbundle/config.yaml build
+crabctl --config /etc/crab/config.yaml build
 ```
 
 3. Validate the result:
 
 ```bash
-certbundle --config /etc/certbundle/config.yaml validate
+crabctl --config /etc/crab/config.yaml validate
 ```
 
 ---
@@ -102,7 +102,7 @@ certbundle --config /etc/certbundle/config.yaml validate
 ## CLI reference
 
 ```
-certbundle [--config FILE] [--verbose] [--quiet] COMMAND [ARGS]
+crabctl [--config FILE] [--verbose] [--quiet] COMMAND [ARGS]
 
 Commands:
   build         Build one or more output profiles.
@@ -117,77 +117,77 @@ Commands:
 
 ```bash
 # Build all profiles
-certbundle build
+crabctl build
 
 # Build specific profiles
-certbundle build grid server-auth
+crabctl build grid server-auth
 
 # Preview without writing
-certbundle build --dry-run
+crabctl build --dry-run
 
 # Print source/policy report
-certbundle build --report
+crabctl build --report
 ```
 
 ### validate
 
 ```bash
 # Validate all profiles defined in config
-certbundle validate
+crabctl validate
 
 # Validate a specific profile
-certbundle validate grid
+crabctl validate grid
 
 # Validate an arbitrary directory
-certbundle validate /etc/grid-security/certificates
+crabctl validate /etc/grid-security/certificates
 
 # Output JSON
-certbundle validate --json grid
+crabctl validate --json grid
 ```
 
 ### diff
 
 ```bash
-# See what 'certbundle build grid' would change
-certbundle diff grid
+# See what 'crabctl build grid' would change
+crabctl diff grid
 
 # Compare two directories directly
-certbundle diff /etc/grid-security/certificates --old-dir /backup/certs
+crabctl diff /etc/grid-security/certificates --old-dir /backup/certs
 
 # JSON output
-certbundle diff --json grid
+crabctl diff --json grid
 ```
 
 ### list
 
 ```bash
 # List all certificates in a profile (after policy filtering)
-certbundle list grid
+crabctl list grid
 
 # List from a specific source (before policy)
-certbundle list --source igtf-classic
+crabctl list --source igtf-classic
 
 # List from a raw directory
-certbundle list /etc/grid-security/certificates
+crabctl list /etc/grid-security/certificates
 
 # Show only expired
-certbundle list --expired grid
+crabctl list --expired grid
 
 # JSON
-certbundle list --json grid | jq '.[].subject'
+crabctl list --json grid | jq '.[].subject'
 ```
 
 ### fetch-crls
 
 ```bash
 # Fetch CRLs for all profiles with include_crls: true
-certbundle fetch-crls
+crabctl fetch-crls
 
 # Fetch for a specific profile
-certbundle fetch-crls grid
+crabctl fetch-crls grid
 
 # Dry run — show URLs without downloading
-certbundle fetch-crls --dry-run
+crabctl fetch-crls --dry-run
 ```
 
 ---
@@ -244,7 +244,7 @@ systemctl enable --now certbundle.timer
 ### cron
 
 ```cron
-0 4 * * *  root  certbundle --config /etc/certbundle/config.yaml build 2>&1 | logger -t certbundle
+0 4 * * *  root  crabctl --config /etc/crab/config.yaml build 2>&1 | logger -t crabctl
 ```
 
 See `systemd/README.md` for full installation instructions.

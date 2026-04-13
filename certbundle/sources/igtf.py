@@ -133,54 +133,71 @@ class IGTFSource(CertificateSource):
 
 
 # ---------------------------------------------------------------------------
+# Shared entry processor
+# ---------------------------------------------------------------------------
+
+def _process_igtf_entries(entries, source_name):
+    # type: (List[Tuple[str, str, bytes]], str) -> Tuple[List[CertificateInfo], Dict, Dict, List[str]]
+    """Classify and parse a sequence of (basename, source_path, data) file entries.
+
+    Used by both the directory and tarball loaders to avoid duplicating the
+    extension-dispatch logic.
+    """
+    certs = []
+    info_files = {}     # type: Dict[str, Dict[str, str]]
+    extra_files = {}    # type: Dict[str, bytes]
+    errors = []
+
+    for name, source_path, data in entries:
+        ext = os.path.splitext(name)[1].lower()
+        stem = os.path.splitext(name)[0]
+
+        if ext == ".pem":
+            try:
+                parsed = parse_pem_data(data, source_name=source_name, source_path=source_path)
+                certs.extend(parsed)
+            except Exception as exc:
+                errors.append("Error parsing PEM {}: {}".format(source_path, exc))
+
+        elif ext == ".info":
+            try:
+                info_files[stem] = _parse_info_file(data.decode("utf-8", errors="replace"))
+            except Exception as exc:
+                errors.append("Error parsing info {}: {}".format(source_path, exc))
+
+        elif ext in (".signing_policy", ".namespaces", ".crl_url", ".lsc"):
+            extra_files[name] = data
+
+    return certs, info_files, extra_files, errors
+
+
+# ---------------------------------------------------------------------------
 # Directory loader
 # ---------------------------------------------------------------------------
 
 def _load_directory(directory, source_name):
     # type: (str, str) -> Tuple[List[CertificateInfo], Dict, Dict, List[str]]
-    certs = []
-    info_files = {}
-    extra_files = {}
     errors = []
 
     if not os.path.isdir(directory):
         errors.append("IGTF directory not found: {}".format(directory))
-        return certs, info_files, extra_files, errors
+        return [], {}, {}, errors
 
+    entries = []
     for entry in sorted(os.listdir(directory)):
         full = os.path.join(directory, entry)
         if not os.path.isfile(full):
             continue
+        try:
+            with open(full, "rb") as fh:
+                data = fh.read()
+        except Exception as exc:
+            errors.append("Error reading {}: {}".format(full, exc))
+            continue
+        entries.append((entry, full, data))
 
-        ext = os.path.splitext(entry)[1].lower()
-        stem = os.path.splitext(entry)[0]
-
-        if ext == ".pem":
-            try:
-                with open(full, "rb") as fh:
-                    data = fh.read()
-                parsed = parse_pem_data(data, source_name=source_name, source_path=full)
-                # Re-label source_path to the file path but with stem as key
-                for ci in parsed:
-                    ci.source_path = full
-                certs.extend(parsed)
-            except Exception as exc:
-                errors.append("Error reading {}: {}".format(full, exc))
-
-        elif ext == ".info":
-            try:
-                with open(full, "r", errors="replace") as fh:
-                    info_files[stem] = _parse_info_file(fh.read())
-            except Exception as exc:
-                errors.append("Error reading info {}: {}".format(full, exc))
-
-        elif ext in (".signing_policy", ".namespaces", ".crl_url", ".lsc"):
-            try:
-                with open(full, "rb") as fh:
-                    extra_files[entry] = fh.read()
-            except Exception as exc:
-                errors.append("Error reading extra file {}: {}".format(full, exc))
-
+    certs, info_files, extra_files, errs = _process_igtf_entries(entries, source_name)
+    errors.extend(errs)
     return certs, info_files, extra_files, errors
 
 
@@ -231,9 +248,7 @@ def _load_url(url, cache_dir, source_name):
 
 def _process_tarfile(tf, source_name):
     # type: (tarfile.TarFile, str) -> Tuple[List[CertificateInfo], Dict, Dict, List[str]]
-    certs = []
-    info_files = {}
-    extra_files = {}
+    entries = []
     errors = []
 
     for member in tf.getmembers():
@@ -247,9 +262,6 @@ def _process_tarfile(tf, source_name):
         if not name or name.startswith("."):
             continue  # skip directory entries and hidden files
 
-        ext = os.path.splitext(name)[1].lower()
-        stem = os.path.splitext(name)[0]
-
         try:
             fobj = tf.extractfile(member)
             if fobj is None:
@@ -259,26 +271,10 @@ def _process_tarfile(tf, source_name):
             errors.append("Error reading tarball member {}: {}".format(member.name, exc))
             continue
 
-        if ext == ".pem":
-            try:
-                parsed = parse_pem_data(
-                    data,
-                    source_name=source_name,
-                    source_path=name,
-                )
-                certs.extend(parsed)
-            except Exception as exc:
-                errors.append("Error parsing PEM {}: {}".format(member.name, exc))
+        entries.append((name, name, data))
 
-        elif ext == ".info":
-            try:
-                info_files[stem] = _parse_info_file(data.decode("utf-8", errors="replace"))
-            except Exception as exc:
-                errors.append("Error parsing info {}: {}".format(member.name, exc))
-
-        elif ext in (".signing_policy", ".namespaces", ".crl_url", ".lsc"):
-            extra_files[name] = data
-
+    certs, info_files, extra_files, errs = _process_igtf_entries(entries, source_name)
+    errors.extend(errs)
     return certs, info_files, extra_files, errors
 
 

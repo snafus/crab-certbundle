@@ -1,6 +1,6 @@
 [Unit]
-Description=certbundle — daily CA certificate directory refresh
-Documentation=https://github.com/your-org/certbundle
+Description=crabctl — daily CA certificate directory refresh
+Documentation=https://github.com/snafus/crab-certbundle
 
 [Timer]
 # Run daily at 04:00 local time.

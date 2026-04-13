@@ -40,7 +40,10 @@ class ValidationIssue:
 
     def __init__(self, level, message, file=None):
         # type: (str, str, Optional[str]) -> None
-        assert level in self.LEVELS
+        if level not in self.LEVELS:
+            raise ValueError("Invalid ValidationIssue level {!r}; must be one of: {}".format(
+                level, ", ".join(self.LEVELS)
+            ))
         self.level = level
         self.message = message
         self.file = file

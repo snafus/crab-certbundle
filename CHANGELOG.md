@@ -53,7 +53,7 @@ Initial public release.
 - `certbundle.sources.http` — HTTP/HTTPS download with retry and backoff;
   scheme validation (rejects `file://`, `ftp://`, etc.); size cap.
 
-**CLI** (`certbundle` entry point)
+**CLI** (`crabctl` entry point)
 - `build [PROFILE...]` — build profiles; `--dry-run`, `--report`, `--no-crls`
 - `validate [TARGET...]` — validate CApath dirs; `--no-hash-check`,
   `--no-openssl`, `--json`; exit codes 0/1/2

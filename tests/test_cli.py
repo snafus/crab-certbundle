@@ -28,7 +28,7 @@ def cli_env(tmp_path, ca_pem, second_ca_pem):
     (src_dir / "ca2.pem").write_bytes(second_ca_pem)
 
     out_dir = tmp_path / "out"
-    cfg = tmp_path / "certbundle.yaml"
+    cfg = tmp_path / "crab.yaml"
     cfg.write_text(
         "version: 1\n"
         "sources:\n"
@@ -85,7 +85,7 @@ class TestShowConfig:
             result = runner.invoke(main, ["show-config"])
         assert result.exit_code == 1
         # Should mention searched paths
-        assert "certbundle.yaml" in result.output or "No config" in result.output
+        assert "crab.yaml" in result.output or "No config" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ class TestList:
         (src / "good.pem").write_bytes(ca_pem)
         (src / "expired.pem").write_bytes(expired_ca_pem)
 
-        cfg = tmp_path / "certbundle.yaml"
+        cfg = tmp_path / "crab.yaml"
         cfg.write_text(
             "version: 1\n"
             "sources:\n"
@@ -330,6 +330,133 @@ class TestGlobalOptions:
     def test_envvar_config(self, runner, cli_env):
         result = runner.invoke(
             main, ["show-config"],
-            env={"CERTBUNDLE_CONFIG": cli_env["config"]},
+            env={"CRAB_CONFIG": cli_env["config"]},
         )
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# validate --json
+# ---------------------------------------------------------------------------
+
+class TestValidateJson:
+    def test_json_output_is_valid_json(self, runner, cli_env):
+        runner.invoke(main, ["--config", cli_env["config"], "build"])
+        result = runner.invoke(
+            main, ["--config", cli_env["config"], "validate", "--json",
+                   "default", "--no-openssl"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+
+    def test_json_contains_target_and_issues(self, runner, cli_env):
+        runner.invoke(main, ["--config", cli_env["config"], "build"])
+        result = runner.invoke(
+            main, ["--config", cli_env["config"], "validate", "--json",
+                   "default", "--no-openssl"]
+        )
+        data = json.loads(result.output)
+        assert data[0]["target"] == "default"
+        assert "issues" in data[0]
+        assert "errors" in data[0]
+        assert "warnings" in data[0]
+
+    def test_json_exit_code_2_on_error(self, runner, cli_env):
+        # Validate a non-existent profile directory → error
+        result = runner.invoke(
+            main, ["--config", cli_env["config"], "validate", "--json",
+                   "default", "--no-openssl"]
+        )
+        # output dir doesn't exist yet → errors
+        assert result.exit_code == 2
+        data = json.loads(result.output)
+        assert data[0]["errors"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# list — raw directory path
+# ---------------------------------------------------------------------------
+
+class TestListRawDirectory:
+    def test_list_from_built_directory(self, runner, cli_env):
+        runner.invoke(main, ["--config", cli_env["config"], "build"])
+        result = runner.invoke(
+            main, ["--config", cli_env["config"], "list", cli_env["out"]]
+        )
+        assert result.exit_code == 0
+        assert "Total: 2" in result.output
+
+    def test_list_unknown_target_exits_1(self, runner, cli_env):
+        result = runner.invoke(
+            main, ["--config", cli_env["config"], "list", "/no/such/path"]
+        )
+        assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# diff — exit code behaviour
+# ---------------------------------------------------------------------------
+
+class TestDiffExitCodes:
+    def test_exits_1_when_changes_present(self, runner, cli_env):
+        # Output dir doesn't exist → all certs added → exit 1
+        result = runner.invoke(main, ["--config", cli_env["config"], "diff", "default"])
+        assert result.exit_code == 1
+        assert "ADDED" in result.output
+
+    def test_exits_0_when_no_changes(self, runner, cli_env):
+        runner.invoke(main, ["--config", cli_env["config"], "build"])
+        result = runner.invoke(main, ["--config", cli_env["config"], "diff", "default"])
+        assert result.exit_code == 0
+        assert "No changes" in result.output
+
+
+# ---------------------------------------------------------------------------
+# show-config — output content
+# ---------------------------------------------------------------------------
+
+class TestShowConfigContent:
+    def test_shows_config_file_path(self, runner, cli_env):
+        result = runner.invoke(main, ["--config", cli_env["config"], "show-config"])
+        assert result.exit_code == 0
+        assert "Config file:" in result.output
+        assert cli_env["config"] in result.output
+
+    def test_shows_source_details(self, runner, cli_env):
+        result = runner.invoke(main, ["--config", cli_env["config"], "show-config"])
+        assert "Sources" in result.output
+        assert "type=local" in result.output
+
+    def test_shows_profile_details(self, runner, cli_env):
+        result = runner.invoke(main, ["--config", cli_env["config"], "show-config"])
+        assert "Profiles" in result.output
+        assert cli_env["out"] in result.output
+
+
+# ---------------------------------------------------------------------------
+# build — source load error handling
+# ---------------------------------------------------------------------------
+
+class TestBuildSourceError:
+    def test_build_with_missing_source_path_exits_error(self, runner, tmp_path):
+        """A source pointing at a non-existent path should warn and write 0 certs."""
+        out = str(tmp_path / "out")
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  bad:\n"
+            "    type: local\n"
+            "    path: /no/such/dir\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [bad]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n".format(out=out)
+        )
+        result = runner.invoke(main, ["--config", str(cfg), "build"])
+        # Should not crash; missing path is a warning, not a fatal error
+        assert result.exit_code == 0
+        assert "WARNING" in result.output or "does not exist" in result.output

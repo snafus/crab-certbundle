@@ -42,7 +42,7 @@ sources:
   # Public CA roots from a directory of PEM files
   custom-public-roots:
     type: local
-    path: /etc/certbundle/extra-roots/
+    path: /etc/crab/extra-roots/
     pattern:
       - "*.pem"
       - "*.crt"
@@ -116,7 +116,7 @@ profiles:
     sources:
       - system-roots
       - custom-public-roots
-    output_path: /etc/certbundle/server-auth
+    output_path: /etc/crab/server-auth
     staging_path: /var/lib/certbundle/staging/server-auth
     atomic: true
     rehash: auto
@@ -146,7 +146,7 @@ profiles:
     sources:
       - igtf-classic-dir
       - system-roots
-    output_path: /etc/certbundle/combined
+    output_path: /etc/crab/combined
     staging_path: /var/lib/certbundle/staging/combined
     atomic: true
     rehash: auto

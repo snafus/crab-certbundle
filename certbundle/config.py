@@ -94,6 +94,9 @@ class ProfileConfig:
         self.staging_path = raw.get("staging_path", self.output_path + ".staging")
         self.atomic = bool(raw.get("atomic", True))
 
+        if self.atomic:
+            _check_staging_device(self.output_path, self.staging_path, name)
+
         self.sources = raw.get("sources", [])
         if not self.sources:
             raise ConfigError(
@@ -213,8 +216,60 @@ class Config:
 
 
 # ---------------------------------------------------------------------------
+# Filesystem helpers
+# ---------------------------------------------------------------------------
+
+def _nearest_existing_dir(path):
+    # type: (str) -> str
+    """Return the nearest ancestor of *path* that exists as a directory."""
+    path = os.path.abspath(path)
+    while True:
+        if os.path.isdir(path):
+            return path
+        parent = os.path.dirname(path)
+        if parent == path:
+            return path  # filesystem root
+        path = parent
+
+
+def _check_staging_device(output_path, staging_path, profile_name):
+    # type: (str, str, str) -> None
+    """
+    Warn if *staging_path* and *output_path* are on different filesystems.
+
+    ``os.rename()`` is only atomic within a single filesystem.  A cross-device
+    staging path causes the rename to fail with EXDEV at swap time, which
+    would leave the output directory in an inconsistent state.
+    """
+    try:
+        out_dev = os.stat(_nearest_existing_dir(output_path)).st_dev
+        stg_dev = os.stat(_nearest_existing_dir(staging_path)).st_dev
+        if out_dev != stg_dev:
+            logger.warning(
+                "Profile '%s': staging_path '%s' is on a different filesystem "
+                "from output_path '%s'. The atomic rename will fail at build "
+                "time. Set staging_path to a location on the same mount point "
+                "as output_path, or set atomic: false.",
+                profile_name, staging_path, output_path,
+            )
+    except OSError:
+        pass  # paths may not exist yet; skip silently
+
+
+# ---------------------------------------------------------------------------
 # Source factory
 # ---------------------------------------------------------------------------
+
+def _get_type_map():
+    # type: () -> dict
+    # Deferred import to avoid circular imports at module load time.
+    from certbundle.sources.igtf import IGTFSource
+    from certbundle.sources.local import LocalSource
+    return {
+        "igtf": IGTFSource,
+        "local": LocalSource,
+    }
+
 
 def build_source(source_config):
     # type: (SourceConfig) -> Any
@@ -222,12 +277,5 @@ def build_source(source_config):
     Instantiate the appropriate :class:`~certbundle.sources.base.CertificateSource`
     subclass for *source_config*.
     """
-    from certbundle.sources.igtf import IGTFSource
-    from certbundle.sources.local import LocalSource
-
-    _TYPE_MAP = {
-        "igtf": IGTFSource,
-        "local": LocalSource,
-    }
-    cls = _TYPE_MAP[source_config.type]
+    cls = _get_type_map()[source_config.type]
     return cls(source_config.name, source_config.raw)

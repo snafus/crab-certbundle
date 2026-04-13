@@ -32,7 +32,7 @@ sources:
     type: local
     # Site-specific CAs (CERN Grid CA, national RIs, etc.) managed locally.
     # Place .pem files here and certbundle will include them automatically.
-    path: /etc/certbundle/site-roots/
+    path: /etc/crab/site-roots/
     pattern: ["*.pem", "*.crt"]
 
 
@@ -61,7 +61,7 @@ profiles:
     sources:
       - system-tls
       - srcnet-extra
-    output_path: /etc/certbundle/server
+    output_path: /etc/crab/server
     staging_path: /var/lib/certbundle/staging/server
     atomic: true
     rehash: auto
@@ -77,7 +77,7 @@ profiles:
       - igtf-classic
       - system-tls
       - srcnet-extra
-    output_path: /etc/certbundle/combined
+    output_path: /etc/crab/combined
     staging_path: /var/lib/certbundle/staging/combined
     atomic: true
     rehash: auto

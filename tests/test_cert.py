@@ -1,7 +1,13 @@
 """Tests for certbundle.cert — parsing and data model."""
 
+import os
+import sys
 import pytest
-from datetime import timezone
+
+from cryptography.x509.oid import ExtendedKeyUsageOID
+
+sys.path.insert(0, os.path.dirname(__file__))
+from conftest import _make_ca_cert  # noqa: E402
 
 from certbundle.cert import parse_pem_data, parse_pem_file, CertificateInfo
 
@@ -98,5 +104,68 @@ class TestParsePemFile:
         assert certs[0].source_name == "file-test"
 
     def test_raises_on_missing_file(self, tmp_path):
-        with pytest.raises(IOError):
+        with pytest.raises(OSError):
             parse_pem_file(str(tmp_path / "nonexistent.pem"))
+
+
+# ---------------------------------------------------------------------------
+# EKU predicate helpers
+# ---------------------------------------------------------------------------
+
+class TestEKUHelpers:
+    def test_has_server_auth_eku_true(self):
+        pem, _, _ = _make_ca_cert(eku_oids=[ExtendedKeyUsageOID.SERVER_AUTH], key_size=1024)
+        ci = parse_pem_data(pem)[0]
+        assert ci.has_server_auth_eku() is True
+
+    def test_has_server_auth_eku_false_when_absent(self):
+        pem, _, _ = _make_ca_cert(eku_oids=[ExtendedKeyUsageOID.CLIENT_AUTH], key_size=1024)
+        ci = parse_pem_data(pem)[0]
+        assert ci.has_server_auth_eku() is False
+
+    def test_has_client_auth_eku_true(self):
+        pem, _, _ = _make_ca_cert(eku_oids=[ExtendedKeyUsageOID.CLIENT_AUTH], key_size=1024)
+        ci = parse_pem_data(pem)[0]
+        assert ci.has_client_auth_eku() is True
+
+    def test_has_client_auth_eku_false_when_absent(self):
+        pem, _, _ = _make_ca_cert(eku_oids=[ExtendedKeyUsageOID.SERVER_AUTH], key_size=1024)
+        ci = parse_pem_data(pem)[0]
+        assert ci.has_client_auth_eku() is False
+
+    def test_both_eku_present(self):
+        pem, _, _ = _make_ca_cert(
+            eku_oids=[ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.CLIENT_AUTH],
+            key_size=1024,
+        )
+        ci = parse_pem_data(pem)[0]
+        assert ci.has_server_auth_eku() is True
+        assert ci.has_client_auth_eku() is True
+
+
+# ---------------------------------------------------------------------------
+# CertificateInfo equality / hashing edge cases
+# ---------------------------------------------------------------------------
+
+class TestCertificateInfoEquality:
+    def test_eq_with_non_certinfo_returns_not_implemented(self, ca_pem):
+        ci = parse_pem_data(ca_pem)[0]
+        result = ci.__eq__("not a CertificateInfo")
+        assert result is NotImplemented
+
+    def test_hash_is_consistent(self, ca_pem):
+        ci1 = parse_pem_data(ca_pem)[0]
+        ci2 = parse_pem_data(ca_pem)[0]
+        assert hash(ci1) == hash(ci2)
+
+
+# ---------------------------------------------------------------------------
+# Bundle parsing skip-on-bad-block
+# ---------------------------------------------------------------------------
+
+class TestBundleParseSkipsGarbage:
+    def test_partial_garbage_still_yields_good_certs(self, ca_pem):
+        garbage = b"-----BEGIN CERTIFICATE-----\nbad data\n-----END CERTIFICATE-----\n"
+        data = garbage + b"\n" + ca_pem
+        certs = parse_pem_data(data)
+        assert len(certs) == 1  # garbage skipped, good cert parsed

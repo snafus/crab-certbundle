@@ -1,0 +1,144 @@
+name: Release
+
+# Triggered by pushing a version tag (e.g. git tag v0.1.0 && git push origin v0.1.0).
+# Builds RPMs for EL8 and EL9, then creates a GitHub Release and attaches them.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # ── Build RPM for EL8 ─────────────────────────────────────────────────────
+  rpm-el8:
+    name: RPM / EL8
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux:8
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf -y install \
+            python3 python3-pip \
+            gcc openssl-devel libffi-devel make \
+            rpm-build systemd-rpm-macros git
+          dnf clean all
+          python3 -m pip install --upgrade "pip<21.4"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare rpmbuild tree and source tarball
+        run: |
+          git config --global --add safe.directory '*'
+          VERSION=$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('setup.cfg'); print(c['metadata']['version'])")
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          git archive --prefix=crab-certbundle-${VERSION}/ HEAD \
+            | gzip > rpmbuild/SOURCES/crab-certbundle-${VERSION}.tar.gz
+          cp packaging/rpm/crab-certbundle.spec rpmbuild/SPECS/
+
+      - name: Build RPM
+        run: |
+          rpmbuild -ba rpmbuild/SPECS/crab-certbundle.spec \
+            --define "_topdir $(pwd)/rpmbuild"
+
+      - name: Upload EL8 RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-el8
+          path: |
+            rpmbuild/RPMS/**/*.rpm
+            rpmbuild/SRPMS/**/*.rpm
+
+  # ── Build RPM for EL9 ─────────────────────────────────────────────────────
+  rpm-el9:
+    name: RPM / EL9
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux:9
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf -y install \
+            python3 python3-pip \
+            gcc openssl-devel libffi-devel make \
+            rpm-build systemd-rpm-macros git
+          dnf clean all
+          python3 -m pip install --upgrade pip
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare rpmbuild tree and source tarball
+        run: |
+          git config --global --add safe.directory '*'
+          VERSION=$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('setup.cfg'); print(c['metadata']['version'])")
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          git archive --prefix=crab-certbundle-${VERSION}/ HEAD \
+            | gzip > rpmbuild/SOURCES/crab-certbundle-${VERSION}.tar.gz
+          cp packaging/rpm/crab-certbundle.spec rpmbuild/SPECS/
+
+      - name: Build RPM
+        run: |
+          rpmbuild -ba rpmbuild/SPECS/crab-certbundle.spec \
+            --define "_topdir $(pwd)/rpmbuild"
+
+      - name: Upload EL9 RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-el9
+          path: |
+            rpmbuild/RPMS/**/*.rpm
+            rpmbuild/SRPMS/**/*.rpm
+
+  # ── Create GitHub Release and attach RPMs ─────────────────────────────────
+  release:
+    name: GitHub Release
+    needs: [rpm-el8, rpm-el9]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout (for release notes)
+        uses: actions/checkout@v4
+
+      - name: Download EL8 RPMs
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-el8
+          path: dist/el8
+
+      - name: Download EL9 RPMs
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-el9
+          path: dist/el9
+
+      - name: List release assets
+        run: find dist/ -name "*.rpm" | sort
+
+      - name: Extract changelog entry for this version
+        id: changelog
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"   # strip leading 'v'
+          # Pull the section for this version out of CHANGELOG.md
+          NOTES=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## /{exit} found{print}" CHANGELOG.md)
+          # Write to a temp file to handle multi-line content safely
+          echo "${NOTES}" > /tmp/release-notes.md
+          echo "notes_file=/tmp/release-notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "CRAB ${{ github.ref_name }}" \
+            --notes-file "${{ steps.changelog.outputs.notes_file }}" \
+            dist/el8/**/*.rpm \
+            dist/el9/**/*.rpm

@@ -2,7 +2,7 @@
 
 ## Overview
 
-`certbundle` builds OpenSSL-compatible CApath directories by combining IGTF
+`crabctl` builds OpenSSL-compatible CApath directories by combining IGTF
 trust anchors with public CA roots.  The pipeline is designed to be
 **modular**, **deterministic**, and **independently maintainable** — it does
 not depend on OSG packaging, VOMS, or any grid middleware.
@@ -72,7 +72,7 @@ The hash algorithm (OpenSSL 1.1+) is:
 3. Take the first 4 bytes as a little-endian `uint32`.
 4. Clear the high bit: `value & 0x7FFFFFFF`.
 
-`certbundle` computes this hash via three strategies in priority order:
+`crabctl` computes this hash via three strategies in priority order:
 
 1. **pyOpenSSL** (`cert.subject_name_hash()`) — calls the C library directly;
    guaranteed to match `openssl x509 -hash`.  Preferred when available.
@@ -137,7 +137,7 @@ Each bundle contains per-CA files:
 | `.namespaces` | EUGridPMA namespace definitions |
 | `.crl_url` | CRL distribution URL(s) |
 
-`certbundle` parses `.info` files and stores all metadata on the
+`crabctl` parses `.info` files and stores all metadata on the
 `CertificateInfo.igtf_info` dict, making it available to policy rules
 (`igtf_policy` matcher) and output renderers (written as `.info` files
 alongside the hashed certificate files).
@@ -163,7 +163,7 @@ configurable `max_age_hours` threshold (default 24 h).
 
 ## Trust separation
 
-`certbundle` supports clean separation of trust stores through the profile
+`crabctl` supports clean separation of trust stores through the profile
 model:
 
 | Profile | Sources | Typical consumer |

@@ -194,7 +194,7 @@ def parse_pem_file(path, source_name=None):
         with open(path, "rb") as fh:
             data = fh.read()
     except OSError as exc:
-        raise IOError("Cannot read certificate file {}: {}".format(path, exc))
+        raise OSError("Cannot read certificate file {}: {}".format(path, exc))
     return parse_pem_data(data, source_name=source_name, source_path=path)
 
 
@@ -343,16 +343,18 @@ def _extract_key_usage(cert):
     return usages
 
 
+_EKU_NAMES = {
+    ExtendedKeyUsageOID.SERVER_AUTH.dotted_string: "serverAuth",
+    ExtendedKeyUsageOID.CLIENT_AUTH.dotted_string: "clientAuth",
+    ExtendedKeyUsageOID.CODE_SIGNING.dotted_string: "codeSigning",
+    ExtendedKeyUsageOID.EMAIL_PROTECTION.dotted_string: "emailProtection",
+    ExtendedKeyUsageOID.TIME_STAMPING.dotted_string: "timeStamping",
+    ExtendedKeyUsageOID.OCSP_SIGNING.dotted_string: "OCSPSigning",
+}
+
+
 def _extract_eku(cert):
     # type: (x509.Certificate) -> List[str]
-    _EKU_NAMES = {
-        ExtendedKeyUsageOID.SERVER_AUTH.dotted_string: "serverAuth",
-        ExtendedKeyUsageOID.CLIENT_AUTH.dotted_string: "clientAuth",
-        ExtendedKeyUsageOID.CODE_SIGNING.dotted_string: "codeSigning",
-        ExtendedKeyUsageOID.EMAIL_PROTECTION.dotted_string: "emailProtection",
-        ExtendedKeyUsageOID.TIME_STAMPING.dotted_string: "timeStamping",
-        ExtendedKeyUsageOID.OCSP_SIGNING.dotted_string: "OCSPSigning",
-    }
     try:
         eku = cert.extensions.get_extension_for_oid(ExtensionOID.EXTENDED_KEY_USAGE)
         result = []

@@ -32,7 +32,7 @@ Core trust-directory pipeline, complete and tested.
 - ✅ `local` — single PEM, bundle file, directory (glob, optional recursive)
 - ✅ `http` — download with retry/backoff; scheme validation (http/https only)
 
-### CLI (`crab` / `certbundle`)
+### CLI (`crab` / `crabctl`)
 
 - ✅ `build [PROFILE…]` — `--dry-run`, `--report`, `--no-crls`
 - ✅ `validate [TARGET…]` — `--no-hash-check`, `--no-openssl`, `--json`; exit codes 0/1/2
@@ -40,7 +40,7 @@ Core trust-directory pipeline, complete and tested.
 - ✅ `list [TARGET]` — `--source`, `--expired`, `--json`
 - ✅ `fetch-crls [PROFILE…]` — `--dry-run`
 - ✅ `show-config`
-- ✅ `CERTBUNDLE_CONFIG` / `CRAB_CONFIG` environment variable
+- ✅ `CRAB_CONFIG` environment variable
 
 ### Packaging and Operations
 
@@ -60,8 +60,7 @@ Core trust-directory pipeline, complete and tested.
 *Goal: make CRAB installable from standard package managers used in research
 computing environments.*
 
-- 🔲 Rename package entry point from `certbundle` to `crab`; keep `certbundle`
-  as a deprecated alias for one release cycle
+- 🔲 Add `crab` as an alias entry point alongside `crabctl`
 - 🔲 PyPI release (`crab` package name)
 - 🔲 RPM spec file for Rocky/RHEL 8 and 9 (COPR or direct)
 - 🔲 Debian/Ubuntu `.deb` package (for Ubuntu 22.04 LTS)

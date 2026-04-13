@@ -95,3 +95,80 @@ class TestValidationIssue:
     def test_has_errors_true(self, tmp_path):
         issues = validate_directory(str(tmp_path / "nope"), run_openssl=False)
         assert has_errors(issues)
+
+    def test_invalid_level_raises(self):
+        with pytest.raises(ValueError, match="level"):
+            ValidationIssue("critical", "bad level")
+
+    def test_repr(self):
+        issue = ValidationIssue("warning", "watch out")
+        assert "WARNING" in repr(issue)
+        assert "watch out" in repr(issue)
+
+
+# ---------------------------------------------------------------------------
+# Hash mismatch detection
+# ---------------------------------------------------------------------------
+
+class TestHashMismatch:
+    def test_detects_wrong_hash_in_filename(self, tmp_path, ca_pem):
+        """Place a cert under the wrong hash filename; expect an error."""
+        # Write the cert under a filename with a known-wrong hash
+        (tmp_path / "00000000.0").write_bytes(ca_pem)
+        issues = validate_directory(str(tmp_path), check_hashes=True, run_openssl=False)
+        hash_errors = [i for i in issues if i.level == "error" and "mismatch" in i.message.lower()]
+        assert hash_errors, "Expected a hash mismatch error but got: {}".format(issues)
+
+    def test_no_mismatch_for_correct_filename(self, tmp_path, ca_pem):
+        d = _make_output(tmp_path, [ca_pem])
+        issues = validate_directory(d, check_hashes=True, run_openssl=False)
+        assert not any("mismatch" in i.message.lower() for i in issues)
+
+
+# ---------------------------------------------------------------------------
+# Multi-cert file warning
+# ---------------------------------------------------------------------------
+
+class TestMultiCertFile:
+    def test_warns_when_file_contains_two_certs(self, tmp_path, ca_pem, second_ca_pem):
+        """A CApath file should contain exactly one certificate."""
+        from certbundle.cert import parse_pem_data
+        from certbundle.rehash import compute_subject_hash
+        certs = parse_pem_data(ca_pem)
+        hash0 = compute_subject_hash(certs[0])
+        bundle = ca_pem + b"\n" + second_ca_pem
+        (tmp_path / (hash0 + ".0")).write_bytes(bundle)
+        issues = validate_directory(str(tmp_path), check_hashes=False, run_openssl=False)
+        warn_msgs = [str(i) for i in issues if i.level == "warning"]
+        assert any("2 certificate" in m.lower() or "contains 2" in m.lower() for m in warn_msgs)
+
+
+# ---------------------------------------------------------------------------
+# Unknown files info message
+# ---------------------------------------------------------------------------
+
+class TestUnknownFiles:
+    def test_info_for_unrecognised_files(self, tmp_path, ca_pem):
+        d = _make_output(tmp_path, [ca_pem])
+        # Drop a random file in the built directory
+        open(os.path.join(d, "random.txt"), "w").close()
+        issues = validate_directory(d, check_hashes=False, run_openssl=False)
+        info_msgs = [i for i in issues if i.level == "info"]
+        assert any("unrecognised" in i.message.lower() for i in info_msgs)
+
+
+# ---------------------------------------------------------------------------
+# openssl verify spot-check (graceful unavailability)
+# ---------------------------------------------------------------------------
+
+class TestOpensslSpotCheck:
+    def test_skips_gracefully_when_openssl_absent(self, tmp_path, ca_pem):
+        """validate_directory with run_openssl=True should not crash even
+        when the openssl binary is absent; it should just produce no extra issues."""
+        from unittest.mock import patch
+        d = _make_output(tmp_path, [ca_pem], name="ssl-check")
+        with patch("subprocess.run", side_effect=FileNotFoundError("openssl not found")):
+            issues = validate_directory(d, check_hashes=False, run_openssl=True)
+        # Should have no openssl-related errors
+        openssl_errors = [i for i in issues if i.level == "error"]
+        assert openssl_errors == []

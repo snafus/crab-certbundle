@@ -225,14 +225,10 @@ class CRLManager:
         # Convert DER to PEM via openssl if possible
         crl_pem = _der_to_pem_crl(crl_der)
 
-        # Find a free collision index
-        idx = 0
-        while idx < 100:  # safety cap
-            filename = "{}.r{}".format(issuer_hash, idx)
-            path = os.path.join(self.crl_path, filename)
-            if not os.path.exists(path):
-                break
-            idx += 1
+        # Always write to .r0 for this issuer; subsequent atomic replace
+        # overwrites any existing CRL so stale files never accumulate.
+        filename = "{}.r0".format(issuer_hash)
+        path = os.path.join(self.crl_path, filename)
 
         # Write atomically
         fd, tmp = tempfile.mkstemp(dir=self.crl_path, suffix=".tmp")
@@ -350,13 +346,7 @@ def _safe_abspath(path, field_name):
 
     Raises :exc:`ValueError` if the path contains suspicious sequences.
     """
-    path = os.path.abspath(os.path.expanduser(path))
-    # Normalised abspath should never contain these after expansion
-    if ".." in path.split(os.sep):
-        raise ValueError(
-            "Suspicious path component in {}: {!r}".format(field_name, path)
-        )
-    return path
+    return os.path.abspath(os.path.expanduser(path))
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 
 
 # ---------------------------------------------------------------------------
@@ -38,9 +38,13 @@ def _make_ca_cert(
     not_after=None,
     path_length=None,
     key=None,
+    eku_oids=None,
+    key_size=2048,
 ):
     """Generate a self-signed (or cross-signed) CA certificate and its private key."""
-    key = key or _make_key()
+    key = key or rsa.generate_private_key(
+        public_exponent=65537, key_size=key_size, backend=default_backend()
+    )
     if not_before is None:
         not_before = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
     if not_after is None:
@@ -85,6 +89,10 @@ def _make_ca_cert(
             critical=True,
         )
     )
+    if eku_oids:
+        builder = builder.add_extension(
+            x509.ExtendedKeyUsage(eku_oids), critical=False
+        )
     cert = builder.sign(signing_key, hashes.SHA256(), default_backend())
     pem = cert.public_bytes(serialization.Encoding.PEM)
     return pem, key, cert

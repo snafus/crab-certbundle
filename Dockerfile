@@ -1,16 +1,16 @@
-# certbundle — containerised test and development environment
+# crabctl — containerised test and development environment
 #
 # Provides a Rocky Linux 8 base (mirrors EL8 / RHEL8) with Python 3.6.8
 # and OpenSSL 1.1 for validating that the tool works in the target environment.
 #
 # Build:
-#   docker build -t certbundle-test .
+#   docker build -t crab-test .
 #
 # Run tests:
-#   docker run --rm certbundle-test pytest -v
+#   docker run --rm crab-test pytest -v
 #
 # Interactive shell:
-#   docker run --rm -it certbundle-test bash
+#   docker run --rm -it crab-test bash
 
 FROM rockylinux:8
 
@@ -42,7 +42,7 @@ COPY tests/ tests/
 COPY examples/ examples/
 
 # Verify the install
-RUN certbundle --version
+RUN crabctl --version
 
 # Default command: run the test suite
 CMD ["pytest", "-v", "--tb=short"]

@@ -1,5 +1,5 @@
 """
-certbundle CLI
+crabctl CLI
 
 Commands:
   build       Build one or more output profiles from configured sources.
@@ -10,11 +10,12 @@ Commands:
   show-config Dump the resolved configuration (useful for debugging).
 
 Global options:
-  --config / -c    Path to config file (default: ./certbundle.yaml or /etc/certbundle/config.yaml)
+  --config / -c    Path to config file (default: ./crab.yaml or /etc/crab/config.yaml)
   --verbose / -v   Increase log verbosity.
   --quiet / -q     Suppress all output except errors.
 """
 
+import json
 import logging
 import os
 import re
@@ -43,10 +44,10 @@ logger = logging.getLogger(__name__)
 
 # Default config file search path
 _CONFIG_SEARCH = [
-    "./certbundle.yaml",
-    "./certbundle.yml",
-    "/etc/certbundle/config.yaml",
-    "/etc/certbundle/config.yml",
+    "./crab.yaml",
+    "./crab.yml",
+    "/etc/crab/config.yaml",
+    "/etc/crab/config.yml",
 ]
 
 
@@ -55,13 +56,13 @@ _CONFIG_SEARCH = [
 # ---------------------------------------------------------------------------
 
 @click.group()
-@click.version_option(__version__, prog_name="certbundle")
+@click.version_option(__version__, prog_name="crabctl")
 @click.option(
     "--config", "-c",
     default=None,
     metavar="FILE",
     help="Path to config file.",
-    envvar="CERTBUNDLE_CONFIG",
+    envvar="CRAB_CONFIG",
 )
 @click.option(
     "--verbose", "-v",
@@ -78,7 +79,7 @@ _CONFIG_SEARCH = [
 @click.pass_context
 def main(ctx, config, verbose, quiet):
     """
-    certbundle — OpenSSL CApath directory generator for research infrastructure.
+    crabctl — OpenSSL CApath directory generator for research infrastructure.
 
     Combine IGTF trust anchors and public CA roots into hashed CApath directories
     for XRootD, dCache, curl/OpenSSL, and similar middleware.
@@ -116,8 +117,8 @@ def build(ctx, profiles, dry_run, no_crls, report):
     If no PROFILE names are given, all profiles are built.
 
     Example:
-        certbundle build grid server-auth
-        certbundle build --dry-run
+        crabctl build grid server-auth
+        crabctl build --dry-run
     """
     cfg = _load_config_or_exit(ctx)
     profile_names = list(profiles) or list(cfg.profiles.keys())
@@ -252,19 +253,37 @@ def validate(ctx, targets, no_hash_check, no_openssl, output_json):
         dirs = [(n, p.output_path) for n, p in cfg.profiles.items()]
 
     max_level = 0
+    all_results = []
+
     for label, directory in dirs:
-        click.echo("Validating '{}' ({})...".format(label, directory))
+        if not output_json:
+            click.echo("Validating '{}' ({})...".format(label, directory))
         issues = validate_directory(
             directory,
             check_hashes=not no_hash_check,
             run_openssl=not no_openssl,
         )
-        for issue in issues:
-            click.echo("  {}".format(issue))
+        if output_json:
+            all_results.append({
+                "target": label,
+                "directory": directory,
+                "issues": [
+                    {"level": i.level, "message": i.message, "file": i.file}
+                    for i in issues
+                ],
+                "errors": sum(1 for i in issues if i.level == "error"),
+                "warnings": sum(1 for i in issues if i.level == "warning"),
+            })
+        else:
+            for issue in issues:
+                click.echo("  {}".format(issue))
         if has_errors(issues):
             max_level = 2
         elif has_warnings(issues) and max_level < 1:
             max_level = 1
+
+    if output_json:
+        click.echo(json.dumps(all_results, indent=2))
 
     sys.exit(max_level)
 
@@ -283,12 +302,12 @@ def diff(ctx, profile_or_dir, old_dir, output_json):
     """
     Show changes between the current output directory and a fresh build.
 
-    Useful for reviewing what a ``certbundle build`` would change before
+    Useful for reviewing what a ``crabctl build`` would change before
     committing to it.
 
     Example:
-        certbundle diff grid
-        certbundle diff /etc/grid-security/certificates --old-dir /backup/certs
+        crabctl diff grid
+        crabctl diff /etc/grid-security/certificates --old-dir /backup/certs
     """
     cfg = _load_config_or_exit(ctx)
 
@@ -309,15 +328,7 @@ def diff(ctx, profile_or_dir, old_dir, output_json):
     old_certs = []
     compare_dir = old_dir or current_dir
     if os.path.isdir(compare_dir):
-        for entry in sorted(os.listdir(compare_dir)):
-            if not CERT_HASH_FILE_RE.match(entry):
-                continue
-            full = os.path.join(compare_dir, entry)
-            try:
-                certs = parse_pem_file(full, source_name="existing")
-                old_certs.extend(certs)
-            except Exception:
-                pass
+        old_certs = _load_certs_from_directory(compare_dir, "existing")
     else:
         # Suppress this informational message in JSON mode so stdout is pure JSON.
         if not output_json:
@@ -377,10 +388,10 @@ def list_cmd(ctx, target, source, output_json, expired):
     List certificates in a profile, source, or directory.
 
     Examples:
-        certbundle list grid
-        certbundle list --source igtf-classic
-        certbundle list /etc/grid-security/certificates
-        certbundle list --json | jq '.[].subject'
+        crabctl list grid
+        crabctl list --source igtf-classic
+        crabctl list /etc/grid-security/certificates
+        crabctl list --json | jq '.[].subject'
     """
     cfg = _load_config_or_exit(ctx)
     certs = []
@@ -397,14 +408,7 @@ def list_cmd(ctx, target, source, output_json, expired):
     elif target and target in cfg.profiles:
         certs = _load_profile_certs(cfg, target)
     elif target and os.path.isdir(target):
-        for entry in sorted(os.listdir(target)):
-            if not CERT_HASH_FILE_RE.match(entry):
-                continue
-            full = os.path.join(target, entry)
-            try:
-                certs.extend(parse_pem_file(full, source_name=target))
-            except Exception:
-                pass
+        certs = _load_certs_from_directory(target, target)
     elif target is None:
         click.echo("Please specify a profile, source (--source NAME), or directory.", err=True)
         sys.exit(1)
@@ -492,13 +496,28 @@ def show_config(ctx):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _load_certs_from_directory(directory, source_name):
+    # type: (str, str) -> list
+    """Read all hashed cert files from a built CApath directory."""
+    certs = []
+    for entry in sorted(os.listdir(directory)):
+        if not CERT_HASH_FILE_RE.match(entry):
+            continue
+        full = os.path.join(directory, entry)
+        try:
+            certs.extend(parse_pem_file(full, source_name=source_name))
+        except Exception:
+            pass
+    return certs
+
+
 def _load_config_or_exit(ctx):
     path = ctx.obj.get("config_path")
     if not path:
         click.echo(
             "ERROR: No config file found.\n"
             "Searched: {}\n"
-            "Use --config FILE or set CERTBUNDLE_CONFIG env var.".format(
+            "Use --config FILE or set CRAB_CONFIG env var.".format(
                 ", ".join(_CONFIG_SEARCH)
             ),
             err=True,

@@ -22,8 +22,12 @@ Atomic replacement is implemented with a staging directory:
   4. Remove ``<output_dir>.bak``
 """
 
+import ctypes
+import ctypes.util
+import errno as _errno
 import logging
 import os
+import platform as _platform
 import shutil
 import stat
 from typing import Dict, List, Optional
@@ -66,12 +70,8 @@ class OutputProfile:
         self.rehash_mode = profile_config.get("rehash", "auto")
         self.write_symlinks = bool(profile_config.get("write_symlinks", True))
         self.include_igtf_meta = bool(profile_config.get("include_igtf_meta", True))
-        self.file_mode = int(str(profile_config.get("file_mode", "0o644")), 8) \
-            if isinstance(profile_config.get("file_mode"), str) \
-            else profile_config.get("file_mode", 0o644)
-        self.dir_mode = int(str(profile_config.get("dir_mode", "0o755")), 8) \
-            if isinstance(profile_config.get("dir_mode"), str) \
-            else profile_config.get("dir_mode", 0o755)
+        self.file_mode = int(profile_config.get("file_mode", 0o644))
+        self.dir_mode = int(profile_config.get("dir_mode", 0o755))
 
 
 def build_output(
@@ -170,21 +170,98 @@ def _write_igtf_meta(work_dir, cert_infos, source_results, profile):
 
 
 # ---------------------------------------------------------------------------
+# renameat2(RENAME_EXCHANGE) — truly atomic directory swap on Linux >= 3.15
+# ---------------------------------------------------------------------------
+
+_AT_FDCWD = -100
+_RENAME_EXCHANGE = 2  # (1 << 1) from linux/fs.h
+
+# SYS_renameat2 numbers for each Linux architecture.
+# Reference: linux/arch/*/include/uapi/asm/unistd*.h
+_RENAMEAT2_NR = {
+    "x86_64":  316,
+    "i386":    353,
+    "i686":    353,
+    "aarch64": 276,
+    "arm":     382,
+    "armv7l":  382,
+    "ppc64":   357,
+    "ppc64le": 357,
+    "s390x":   347,
+}
+
+
+def _try_renameat2_exchange(src, dst):
+    # type: (str, str) -> bool
+    """
+    Attempt an atomic directory exchange via renameat2(RENAME_EXCHANGE).
+
+    If successful, *src* and *dst* swap their directory-entry contents
+    simultaneously — there is no instant where either path is absent.
+
+    Returns True on success.  Returns False without raising if the syscall
+    is unavailable (old kernel, non-Linux, unknown arch); the caller should
+    fall back to a two-rename swap.
+
+    Precondition: both *src* and *dst* must already exist and be on the
+    same filesystem.
+    """
+    if _platform.system() != "Linux":
+        return False
+
+    nr = _RENAMEAT2_NR.get(_platform.machine())
+    if nr is None:
+        return False
+
+    libc_name = ctypes.util.find_library("c")
+    if not libc_name:
+        return False
+
+    try:
+        libc = ctypes.CDLL(libc_name, use_errno=True)
+        ret = libc.syscall(
+            ctypes.c_long(nr),
+            ctypes.c_int(_AT_FDCWD),
+            ctypes.c_char_p(src.encode()),
+            ctypes.c_int(_AT_FDCWD),
+            ctypes.c_char_p(dst.encode()),
+            ctypes.c_uint(_RENAME_EXCHANGE),
+        )
+        if ret == 0:
+            return True
+        err = ctypes.get_errno()
+        # ENOSYS → kernel too old; EINVAL → flags not supported; EXDEV → cross-device
+        if err not in (_errno.ENOSYS, _errno.EINVAL, _errno.EXDEV):
+            logger.warning(
+                "renameat2(RENAME_EXCHANGE) failed: errno %d (%s)",
+                err, os.strerror(err),
+            )
+        return False
+    except Exception as exc:
+        logger.debug("renameat2 unavailable: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Atomic directory swap
 # ---------------------------------------------------------------------------
 
 def _atomic_swap(staging_dir, output_dir):
     # type: (str, str) -> None
     """
-    Atomically replace *output_dir* with *staging_dir*.
+    Replace *output_dir* with *staging_dir* as atomically as possible.
 
     Security: rejects symlinks as output_dir to prevent TOCTOU issues where
     a symlink pointing at a critical directory could be silently replaced.
 
-    Steps:
-      1. Rename output_dir → output_dir.bak  (if it exists)
-      2. Rename staging_dir → output_dir
-      3. Remove output_dir.bak
+    Strategy (in order of preference):
+      1. renameat2(RENAME_EXCHANGE) — Linux >= 3.15, same filesystem.
+         output_dir and staging_dir swap instantaneously; no gap where
+         the path is absent.  Old content lands in staging_dir and is
+         removed afterwards.
+      2. Two-rename fallback — universally portable but has a ~microsecond
+         window between the two renames where output_dir does not exist.
+         Acceptable for all known research-infrastructure consumers.
     """
     # Security: refuse to operate on a symlink as the output target.
     if os.path.islink(output_dir):
@@ -193,21 +270,28 @@ def _atomic_swap(staging_dir, output_dir):
             "Configure a real directory path.".format(output_dir)
         )
 
-    backup = output_dir + ".bak"
-
-    # Remove stale backup from previous interrupted run
-    if os.path.exists(backup):
-        shutil.rmtree(backup)
-
     parent = os.path.dirname(output_dir) or "."
     if not os.path.exists(parent):
         os.makedirs(parent, 0o755)
+
+    # ── Strategy 1: atomic exchange ──────────────────────────────────────
+    if os.path.exists(output_dir):
+        if _try_renameat2_exchange(staging_dir, output_dir):
+            # staging_dir now holds the old content; remove it at leisure.
+            shutil.rmtree(staging_dir)
+            logger.debug("Atomic swap complete (renameat2 EXCHANGE): %s", output_dir)
+            return
+
+    # ── Strategy 2: two-rename fallback ──────────────────────────────────
+    backup = output_dir + ".bak"
+    if os.path.exists(backup):
+        shutil.rmtree(backup)
 
     if os.path.exists(output_dir):
         os.rename(output_dir, backup)
 
     os.rename(staging_dir, output_dir)
-    logger.debug("Atomic swap complete: %s → %s (backup removed)", staging_dir, output_dir)
+    logger.debug("Atomic swap complete (rename fallback): %s", output_dir)
 
     if os.path.exists(backup):
         shutil.rmtree(backup)
