@@ -32,7 +32,7 @@ from typing import Dict, List, Optional, Tuple
 
 from certbundle.cert import CertificateInfo, parse_pem_data
 from certbundle.sources.base import CertificateSource, SourceResult
-from certbundle.sources.http import download_to_bytes
+from certbundle.sources.http import download_with_cache
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +230,7 @@ def _load_url(url, cache_dir, source_name):
     # type: (str, str, str) -> Tuple[List[CertificateInfo], Dict, Dict, List[str]]
     errors = []
     try:
-        tarball_data = download_to_bytes(url)
+        tarball_data = download_with_cache(url, cache_dir)
     except Exception as exc:
         errors.append("Failed to download {}: {}".format(url, exc))
         return [], {}, {}, errors

@@ -9,7 +9,13 @@ import pytest
 from unittest.mock import patch, MagicMock, call
 
 
-from certbundle.sources.http import _validate_url, download_to_bytes, download_to_file
+from certbundle.sources.http import (
+    _validate_url,
+    _cache_paths,
+    download_to_bytes,
+    download_to_file,
+    download_with_cache,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +167,123 @@ class TestDownloadToFile:
             download_to_file("http://example.com/f", dest)
         tmp_files = [f for f in os.listdir(str(tmp_path)) if f.endswith(".tmp")]
         assert tmp_files == [], "Temp files were not cleaned up"
+
+
+# ---------------------------------------------------------------------------
+# _cache_paths
+# ---------------------------------------------------------------------------
+
+class TestCachePaths:
+    def test_returns_two_paths_in_cache_dir(self, tmp_path):
+        data, meta = _cache_paths("http://example.com/igtf-bundle.tar.gz", str(tmp_path))
+        assert os.path.dirname(data) == str(tmp_path)
+        assert os.path.dirname(meta) == str(tmp_path)
+
+    def test_data_path_has_tar_gz_extension(self, tmp_path):
+        data, _ = _cache_paths("http://example.com/bundle.tar.gz", str(tmp_path))
+        assert data.endswith(".tar.gz")
+
+    def test_meta_path_has_meta_extension(self, tmp_path):
+        _, meta = _cache_paths("http://example.com/bundle.tar.gz", str(tmp_path))
+        assert meta.endswith(".meta")
+
+    def test_different_urls_give_different_paths(self, tmp_path):
+        d1, _ = _cache_paths("http://example.com/a.tar.gz", str(tmp_path))
+        d2, _ = _cache_paths("http://example.com/b.tar.gz", str(tmp_path))
+        assert d1 != d2
+
+    def test_same_url_gives_same_paths(self, tmp_path):
+        url = "http://example.com/bundle.tar.gz"
+        assert _cache_paths(url, str(tmp_path)) == _cache_paths(url, str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# download_with_cache
+# ---------------------------------------------------------------------------
+
+class TestDownloadWithCache:
+    def test_first_download_returns_content(self, tmp_path):
+        resp = _mock_response([b"tarball content"])
+        resp.headers = {"ETag": '"abc123"', "Last-Modified": "Mon, 01 Jan 2026 00:00:00 GMT"}
+        with patch("requests.get", return_value=resp):
+            data = download_with_cache("http://example.com/b.tar.gz", str(tmp_path))
+        assert data == b"tarball content"
+
+    def test_first_download_writes_cache_file(self, tmp_path):
+        resp = _mock_response([b"tarball content"])
+        resp.headers = {}
+        with patch("requests.get", return_value=resp):
+            download_with_cache("http://example.com/b.tar.gz", str(tmp_path))
+        data_path, _ = _cache_paths("http://example.com/b.tar.gz", str(tmp_path))
+        assert os.path.isfile(data_path)
+        assert open(data_path, "rb").read() == b"tarball content"
+
+    def test_etag_written_to_meta(self, tmp_path):
+        resp = _mock_response([b"data"])
+        resp.headers = {"ETag": '"xyz"'}
+        with patch("requests.get", return_value=resp):
+            download_with_cache("http://example.com/b.tar.gz", str(tmp_path))
+        import json
+        _, meta_path = _cache_paths("http://example.com/b.tar.gz", str(tmp_path))
+        meta = json.load(open(meta_path))
+        assert meta["etag"] == '"xyz"'
+
+    def test_304_returns_cached_bytes(self, tmp_path):
+        url = "http://example.com/b.tar.gz"
+        data_path, meta_path = _cache_paths(url, str(tmp_path))
+        # Pre-populate cache
+        with open(data_path, "wb") as f:
+            f.write(b"cached content")
+        import json
+        with open(meta_path, "w") as f:
+            json.dump({"url": url, "etag": '"abc"'}, f)
+        # Server returns 304
+        resp = MagicMock()
+        resp.status_code = 304
+        with patch("requests.get", return_value=resp):
+            data = download_with_cache(url, str(tmp_path))
+        assert data == b"cached content"
+
+    def test_304_sends_if_none_match_header(self, tmp_path):
+        url = "http://example.com/b.tar.gz"
+        data_path, meta_path = _cache_paths(url, str(tmp_path))
+        with open(data_path, "wb") as f:
+            f.write(b"cached")
+        import json
+        with open(meta_path, "w") as f:
+            json.dump({"url": url, "etag": '"myetag"'}, f)
+        resp = MagicMock()
+        resp.status_code = 304
+        with patch("requests.get", return_value=resp) as mock_get:
+            download_with_cache(url, str(tmp_path))
+        _, kwargs = mock_get.call_args
+        assert mock_get.call_args[1]["headers"]["If-None-Match"] == '"myetag"'
+
+    def test_network_failure_with_cache_returns_cache(self, tmp_path):
+        url = "http://example.com/b.tar.gz"
+        data_path, _ = _cache_paths(url, str(tmp_path))
+        with open(data_path, "wb") as f:
+            f.write(b"stale cached content")
+        with patch("requests.get", side_effect=Exception("connection refused")):
+            data = download_with_cache(url, str(tmp_path))
+        assert data == b"stale cached content"
+
+    def test_network_failure_without_cache_raises(self, tmp_path):
+        with patch("requests.get", side_effect=Exception("connection refused")):
+            with pytest.raises(IOError):
+                download_with_cache("http://example.com/b.tar.gz", str(tmp_path))
+
+    def test_creates_cache_dir_if_missing(self, tmp_path):
+        cache = str(tmp_path / "new" / "subdir")
+        resp = _mock_response([b"data"])
+        resp.headers = {}
+        with patch("requests.get", return_value=resp):
+            download_with_cache("http://example.com/b.tar.gz", cache)
+        assert os.path.isdir(cache)
+
+    def test_bad_scheme_raises_value_error(self, tmp_path):
+        with pytest.raises(ValueError):
+            download_with_cache("ftp://example.com/b.tar.gz", str(tmp_path))
 
     def test_raises_on_bad_scheme(self, tmp_path):
         with pytest.raises(ValueError):

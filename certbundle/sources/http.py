@@ -5,11 +5,13 @@ Only HTTP and HTTPS URLs are accepted.  All other schemes (file://, ftp://,
 gopher://, etc.) are rejected to prevent SSRF and local file-read issues.
 """
 
+import hashlib
+import json
 import logging
 import os
 import tempfile
 import time
-from typing import Optional
+from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -128,3 +130,146 @@ def download_to_file(
         except OSError:
             pass
         raise
+
+
+# ---------------------------------------------------------------------------
+# Cache-aware download
+# ---------------------------------------------------------------------------
+
+def _cache_paths(url, cache_dir):
+    # type: (str, str) -> Tuple[str, str]
+    """Return *(data_path, meta_path)* for a cached URL inside *cache_dir*.
+
+    The filename is derived from the last path component of the URL plus an
+    8-character SHA-256 prefix of the full URL so that two URLs with the same
+    basename don't collide.
+    """
+    parsed = urlparse(url)
+    basename = os.path.basename(parsed.path) or "bundle"
+    stem = os.path.splitext(basename)[0]
+    url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+    name = "{}-{}".format(stem, url_hash)
+    return (
+        os.path.join(cache_dir, name + ".tar.gz"),
+        os.path.join(cache_dir, name + ".meta"),
+    )
+
+
+def download_with_cache(
+    url,                    # type: str
+    cache_dir,              # type: str
+    verify_tls=True,        # type: bool
+):
+    # type: (...) -> bytes
+    """
+    Download *url* into *cache_dir*, using a conditional GET on repeat calls.
+
+    Behaviour:
+    - **First call**: downloads and stores the tarball in *cache_dir* along
+      with a JSON sidecar recording the ETag / Last-Modified response headers.
+    - **Subsequent calls**: sends ``If-None-Match`` / ``If-Modified-Since``
+      request headers; if the server replies 304 Not Modified, the cached copy
+      is returned immediately without re-reading the body.
+    - **Network failure with cached copy**: emits a WARNING and returns the
+      cached copy, allowing offline and air-gapped rebuilds to succeed.
+    - **Network failure without cached copy**: raises :exc:`IOError`.
+
+    Raises :exc:`ValueError` for non-HTTP(S) URLs (same as
+    :func:`download_to_bytes`).
+    """
+    import requests  # lazy import
+
+    _validate_url(url)
+
+    data_path, meta_path = _cache_paths(url, cache_dir)
+
+    # Load existing cache metadata (ETag / Last-Modified)
+    meta = {}  # type: dict
+    if os.path.isfile(meta_path) and os.path.isfile(data_path):
+        try:
+            with open(meta_path, "r") as fh:
+                meta = json.load(fh)
+        except Exception as exc:
+            logger.debug("Could not read cache metadata %s: %s", meta_path, exc)
+
+    # Build conditional request headers
+    req_headers = {}
+    if meta.get("etag"):
+        req_headers["If-None-Match"] = meta["etag"]
+    if meta.get("last_modified"):
+        req_headers["If-Modified-Since"] = meta["last_modified"]
+
+    timeout = (_CONNECT_TIMEOUT, _READ_TIMEOUT)
+    max_bytes = _MAX_CONTENT_MB * 1024 * 1024
+
+    try:
+        logger.debug("Fetching %s (conditional=%s)", url, bool(req_headers))
+        resp = requests.get(
+            url,
+            headers=req_headers,
+            timeout=timeout,
+            verify=verify_tls,
+            stream=True,
+        )
+
+        if resp.status_code == 304:
+            logger.debug("304 Not Modified — using cached copy: %s", data_path)
+            with open(data_path, "rb") as fh:
+                return fh.read()
+
+        resp.raise_for_status()
+
+        # Stream body with size cap
+        chunks = []
+        total = 0
+        for chunk in resp.iter_content(chunk_size=65536):
+            total += len(chunk)
+            if total > max_bytes:
+                raise IOError(
+                    "Response from {} exceeds {} MB limit".format(url, _MAX_CONTENT_MB)
+                )
+            chunks.append(chunk)
+        data = b"".join(chunks)
+
+        # Persist to cache atomically; log but don't fail if we can't write
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(
+                dir=os.path.abspath(cache_dir), suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+                os.replace(tmp, data_path)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            # Write metadata sidecar
+            new_meta = {"url": url}
+            if resp.headers.get("ETag"):
+                new_meta["etag"] = resp.headers["ETag"]
+            if resp.headers.get("Last-Modified"):
+                new_meta["last_modified"] = resp.headers["Last-Modified"]
+            with open(meta_path, "w") as fh:
+                json.dump(new_meta, fh)
+        except Exception as exc:
+            logger.warning("Could not write cache for %s: %s", url, exc)
+
+        logger.debug("Downloaded %d bytes from %s", len(data), url)
+        return data
+
+    except (ValueError, IOError):
+        raise
+    except Exception as exc:
+        # Network / server error — fall back to cached copy if one exists
+        if os.path.isfile(data_path):
+            logger.warning(
+                "Download failed for %s (%s); using cached copy from %s",
+                url, exc, data_path,
+            )
+            with open(data_path, "rb") as fh:
+                return fh.read()
+        raise IOError("Failed to download {}: {}".format(url, exc))

@@ -132,20 +132,20 @@ class TestProcessTarfile:
 class TestLoadUrl:
     def test_download_success_returns_certs(self, ca_pem):
         tarball = _make_tarball([("test-ca.pem", ca_pem)])
-        with patch("certbundle.sources.igtf.download_to_bytes", return_value=tarball):
+        with patch("certbundle.sources.igtf.download_with_cache", return_value=tarball):
             certs, _, _, errors = _load_url("http://example.com/b.tar.gz", "/tmp", "test")
         assert len(certs) == 1
         assert errors == []
 
     def test_download_failure_returns_error(self):
-        with patch("certbundle.sources.igtf.download_to_bytes",
+        with patch("certbundle.sources.igtf.download_with_cache",
                    side_effect=IOError("network error")):
             _, _, _, errors = _load_url("http://example.com/b.tar.gz", "/tmp", "test")
         assert errors
         assert "Failed to download" in errors[0]
 
     def test_corrupt_tarball_bytes_returns_error(self):
-        with patch("certbundle.sources.igtf.download_to_bytes",
+        with patch("certbundle.sources.igtf.download_with_cache",
                    return_value=b"not a tarball"):
             _, _, _, errors = _load_url("http://example.com/b.tar.gz", "/tmp", "test")
         assert errors
@@ -157,7 +157,7 @@ class TestLoadUrl:
             ("my-ca.pem", ca_pem),
             ("my-ca.info", info),
         ])
-        with patch("certbundle.sources.igtf.download_to_bytes", return_value=tarball):
+        with patch("certbundle.sources.igtf.download_with_cache", return_value=tarball):
             certs, info_files, _, errors = _load_url(
                 "http://example.com/b.tar.gz", "/tmp", "test"
             )
@@ -186,7 +186,7 @@ class TestIGTFSourceLoad:
 
     def test_load_from_url(self, ca_pem):
         tarball = _make_tarball([("test-ca.pem", ca_pem)])
-        with patch("certbundle.sources.igtf.download_to_bytes", return_value=tarball):
+        with patch("certbundle.sources.igtf.download_with_cache", return_value=tarball):
             source = IGTFSource("igtf", {"url": "http://example.com/b.tar.gz"})
             result = source.load()
         assert len(result.certificates) == 1
@@ -209,7 +209,7 @@ class TestIGTFSourceLoad:
             ("test-ca.pem", ca_pem),
             ("test-ca.info", info),
         ])
-        with patch("certbundle.sources.igtf.download_to_bytes", return_value=tarball):
+        with patch("certbundle.sources.igtf.download_with_cache", return_value=tarball):
             source = IGTFSource("igtf", {
                 "url": "http://example.com/b.tar.gz",
                 "policies": ["classic"],
@@ -223,7 +223,7 @@ class TestIGTFSourceLoad:
             ("test-ca.pem", ca_pem),
             ("test-ca.info", info),
         ])
-        with patch("certbundle.sources.igtf.download_to_bytes", return_value=tarball):
+        with patch("certbundle.sources.igtf.download_with_cache", return_value=tarball):
             source = IGTFSource("igtf", {
                 "url": "http://example.com/b.tar.gz",
                 "policies": ["classic"],
