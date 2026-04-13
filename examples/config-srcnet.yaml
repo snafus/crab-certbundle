@@ -1,0 +1,97 @@
+##
+## certbundle — SRCNet-style configuration
+##
+## Builds three output directories:
+##   1. grid/     — IGTF classic + IOTA for data-movement middleware
+##   2. server/   — public CAs for server TLS validation
+##   3. combined/ — both, for tools that need a single CApath
+##
+## Designed to run as a daily systemd timer on SRCNet data nodes.
+##
+
+version: 1
+
+sources:
+  igtf-classic:
+    type: igtf
+    # Download the latest IGTF bundle from dl.igtf.net.
+    # Replace the version with the latest from:
+    #   https://dl.igtf.net/distribution/igtf/current/accredited/
+    url: "https://dl.igtf.net/distribution/igtf/current/accredited/igtf-preinstalled-bundle-classic-1.120.tar.gz"
+    cache_dir: /var/cache/certbundle
+    policies:
+      - classic
+      - iota
+
+  system-tls:
+    type: local
+    # System CA bundle (ca-certificates package on EL / Rocky)
+    path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+
+  srcnet-extra:
+    type: local
+    # Site-specific CAs (CERN Grid CA, national RIs, etc.) managed locally.
+    # Place .pem files here and certbundle will include them automatically.
+    path: /etc/certbundle/site-roots/
+    pattern: ["*.pem", "*.crt"]
+
+
+profiles:
+
+  grid:
+    description: "IGTF trust store for XRootD / dCache / gfal2"
+    sources:
+      - igtf-classic
+    output_path: /etc/grid-security/certificates
+    staging_path: /var/lib/certbundle/staging/grid
+    atomic: true
+    rehash: auto
+    include_igtf_meta: true
+    include_crls: true
+    policy:
+      reject_expired: true
+      require_ca_flag: true
+    crl:
+      fetch: true
+      max_age_hours: 24
+      sources: [distribution, igtf]
+
+  server:
+    description: "Public CA trust store for server TLS validation"
+    sources:
+      - system-tls
+      - srcnet-extra
+    output_path: /etc/certbundle/server
+    staging_path: /var/lib/certbundle/staging/server
+    atomic: true
+    rehash: auto
+    include_igtf_meta: false
+    include_crls: false
+    policy:
+      reject_expired: true
+      require_ca_flag: true
+
+  combined:
+    description: "Combined trust store (grid + server auth)"
+    sources:
+      - igtf-classic
+      - system-tls
+      - srcnet-extra
+    output_path: /etc/certbundle/combined
+    staging_path: /var/lib/certbundle/staging/combined
+    atomic: true
+    rehash: auto
+    include_igtf_meta: true
+    include_crls: false
+    policy:
+      reject_expired: true
+      require_ca_flag: true
+
+
+refresh:
+  schedule: "0 4 * * *"
+  timeout: 300
+
+logging:
+  level: INFO
+  file: /var/log/certbundle/certbundle.log

@@ -1,0 +1,17 @@
+[Unit]
+Description=certbundle — daily CA certificate directory refresh
+Documentation=https://github.com/your-org/certbundle
+
+[Timer]
+# Run daily at 04:00 local time.
+OnCalendar=*-*-* 04:00:00
+
+# Spread the start time by up to 30 minutes so all nodes in a cluster
+# don't hit dl.igtf.net simultaneously.
+RandomizedDelaySec=1800
+
+# Run immediately if the last scheduled run was missed (e.g. system was off).
+Persistent=true
+
+[Install]
+WantedBy=timers.target

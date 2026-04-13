@@ -1,0 +1,19 @@
+## certbundle — minimal working configuration
+## Loads IGTF certificates from an existing local directory.
+
+version: 1
+
+sources:
+  igtf:
+    type: igtf
+    path: /etc/grid-security/certificates
+
+profiles:
+  grid:
+    sources: [igtf]
+    output_path: /tmp/certbundle-output
+    atomic: true
+    rehash: auto
+    policy:
+      reject_expired: true
+      require_ca_flag: true
