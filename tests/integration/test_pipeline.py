@@ -27,8 +27,9 @@ def _crabctl(*args, **kwargs):
     """Run crabctl as a subprocess.  Returns a CompletedProcess."""
     return subprocess.run(
         [sys.executable, "-m", "crab.cli"] + list(args),
-        capture_output=True,
-        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,  # text= alias not available in Python 3.6
         **kwargs
     )
 
