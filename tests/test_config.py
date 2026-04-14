@@ -315,3 +315,156 @@ class TestLoggingConfig:
                       extra="logging: INFO\n")
         with pytest.raises(ConfigError, match="logging"):
             load_config(path)
+
+
+# ---------------------------------------------------------------------------
+# Environment variable interpolation
+# ---------------------------------------------------------------------------
+
+from certbundle.config import _expand_env_vars
+
+
+class TestExpandEnvVars:
+    def test_plain_string_unchanged(self):
+        assert _expand_env_vars("hello") == "hello"
+
+    def test_non_string_unchanged(self):
+        assert _expand_env_vars(42) == 42
+        assert _expand_env_vars(True) is True
+        assert _expand_env_vars(None) is None
+
+    def test_expands_set_variable(self, monkeypatch):
+        monkeypatch.setenv("MY_VAR", "/some/path")
+        assert _expand_env_vars("${MY_VAR}") == "/some/path"
+
+    def test_expands_variable_mid_string(self, monkeypatch):
+        monkeypatch.setenv("PREFIX", "/var/cache")
+        result = _expand_env_vars("${PREFIX}/certbundle")
+        assert result == "/var/cache/certbundle"
+
+    def test_expands_multiple_vars(self, monkeypatch):
+        monkeypatch.setenv("A", "foo")
+        monkeypatch.setenv("B", "bar")
+        assert _expand_env_vars("${A}-${B}") == "foo-bar"
+
+    def test_default_used_when_var_unset(self, monkeypatch):
+        monkeypatch.delenv("CERTBUNDLE_CACHE_DIR", raising=False)
+        result = _expand_env_vars("${CERTBUNDLE_CACHE_DIR:-/var/cache/certbundle}")
+        assert result == "/var/cache/certbundle"
+
+    def test_default_not_used_when_var_set(self, monkeypatch):
+        monkeypatch.setenv("CERTBUNDLE_CACHE_DIR", "/custom/path")
+        result = _expand_env_vars("${CERTBUNDLE_CACHE_DIR:-/var/cache/certbundle}")
+        assert result == "/custom/path"
+
+    def test_empty_default_is_valid(self, monkeypatch):
+        monkeypatch.delenv("OPTIONAL_VAR", raising=False)
+        assert _expand_env_vars("${OPTIONAL_VAR:-}") == ""
+
+    def test_raises_config_error_for_unset_required_var(self, monkeypatch):
+        monkeypatch.delenv("REQUIRED_VAR", raising=False)
+        from certbundle.config import ConfigError
+        with pytest.raises(ConfigError, match="REQUIRED_VAR"):
+            _expand_env_vars("${REQUIRED_VAR}")
+
+    def test_double_dollar_escapes_literal(self, monkeypatch):
+        monkeypatch.delenv("VAR", raising=False)
+        assert _expand_env_vars("$$") == "$"
+        assert _expand_env_vars("$${VAR}") == "${VAR}"
+
+    def test_recurses_into_dict(self, monkeypatch):
+        monkeypatch.setenv("MY_PATH", "/tmp/certs")
+        result = _expand_env_vars({"path": "${MY_PATH}", "count": 5})
+        assert result == {"path": "/tmp/certs", "count": 5}
+
+    def test_recurses_into_list(self, monkeypatch):
+        monkeypatch.setenv("HOST", "example.com")
+        result = _expand_env_vars(["${HOST}", 42, None])
+        assert result == ["example.com", 42, None]
+
+    def test_dict_keys_not_expanded(self, monkeypatch):
+        monkeypatch.setenv("KEY", "expanded")
+        result = _expand_env_vars({"${KEY}": "value"})
+        # Keys are never expanded — only values
+        assert "${KEY}" in result
+
+    def test_nested_dict_list_expansion(self, monkeypatch):
+        monkeypatch.setenv("OUT", "/output")
+        raw = {"profiles": {"grid": {"output_path": "${OUT}/grid"}}}
+        result = _expand_env_vars(raw)
+        assert result["profiles"]["grid"]["output_path"] == "/output/grid"
+
+    def test_multiple_missing_vars_all_named(self, monkeypatch):
+        monkeypatch.delenv("MISSING_A", raising=False)
+        monkeypatch.delenv("MISSING_B", raising=False)
+        from certbundle.config import ConfigError
+        with pytest.raises(ConfigError) as exc_info:
+            _expand_env_vars("${MISSING_A} and ${MISSING_B}")
+        msg = str(exc_info.value)
+        assert "MISSING_A" in msg
+        assert "MISSING_B" in msg
+
+
+class TestLoadConfigEnvVars:
+    """Integration: load_config() expands env vars before validation."""
+
+    def _write(self, path, content):
+        with open(path, "w") as fh:
+            fh.write(content)
+
+    def test_env_var_in_path_expanded(self, tmp_path, pem_dir, monkeypatch):
+        monkeypatch.setenv("MY_SRC", pem_dir)
+        monkeypatch.setenv("MY_OUT", str(tmp_path / "out"))
+        cfg_path = str(tmp_path / "crab.yaml")
+        self._write(cfg_path,
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: ${MY_SRC}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: ${MY_OUT}\n"
+        )
+        cfg = load_config(cfg_path)
+        assert cfg.sources["s"].raw["path"] == pem_dir
+        assert cfg.profiles["p"].output_path == str(tmp_path / "out")
+
+    def test_default_used_in_loaded_config(self, tmp_path, pem_dir, monkeypatch):
+        monkeypatch.delenv("CACHE_DIR", raising=False)
+        cfg_path = str(tmp_path / "crab.yaml")
+        self._write(cfg_path,
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {pem_dir}\n"
+            "    cache_dir: ${{CACHE_DIR:-/var/cache/certbundle}}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n".format(
+                pem_dir=pem_dir, out=str(tmp_path / "out")
+            )
+        )
+        cfg = load_config(cfg_path)
+        assert cfg.sources["s"].raw.get("cache_dir") == "/var/cache/certbundle"
+
+    def test_missing_required_var_raises_config_error(self, tmp_path, pem_dir, monkeypatch):
+        monkeypatch.delenv("REQUIRED_OUT", raising=False)
+        cfg_path = str(tmp_path / "crab.yaml")
+        self._write(cfg_path,
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {pem_dir}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: ${{REQUIRED_OUT}}\n".format(pem_dir=pem_dir)
+        )
+        from certbundle.config import ConfigError
+        with pytest.raises(ConfigError, match="REQUIRED_OUT"):
+            load_config(cfg_path)

@@ -29,10 +29,13 @@ sources:
 
   # IGTF bundle fetched directly from dl.igtf.net over HTTPS
   # Note: the URL must point to a .tar.gz file.
+  # String values support ${VAR} and ${VAR:-default} environment variable
+  # interpolation, making container deployments easier:
+  #   cache_dir: "${CACHE_DIR:-/var/cache/certbundle}"
   igtf-online:
     type: igtf
     url: "https://dl.igtf.net/distribution/igtf/current/accredited/igtf-preinstalled-bundle-classic-1.120.tar.gz"
-    cache_dir: /var/cache/certbundle
+    cache_dir: "${CERTBUNDLE_CACHE_DIR:-/var/cache/certbundle}"
 
   # Public CA roots from the OS trust store — auto-detected across EL,
   # Debian/Ubuntu, Alpine, macOS, and other common platforms.

@@ -14,10 +14,32 @@ Config files are YAML.  A minimal example::
         output_path: /etc/grid-security/certificates
 
 See ``examples/config-full.yaml`` for a fully annotated reference.
+
+Environment variable interpolation
+-----------------------------------
+String values in the config may reference environment variables using
+``${VAR}`` or ``${VAR:-default}`` syntax::
+
+    sources:
+      igtf-online:
+        type: igtf
+        url: "${IGTF_URL}"
+        cache_dir: "${CACHE_DIR:-/var/cache/certbundle}"
+
+Rules:
+
+* ``${VAR}``          — expand ``$VAR`` from the environment; raise
+  :exc:`ConfigError` if the variable is not set.
+* ``${VAR:-default}`` — use *default* when ``$VAR`` is unset or empty.
+* ``$$``              — literal dollar sign (escape sequence).
+
+Only YAML string scalar values are expanded; keys, integers, booleans,
+and lists of non-strings are left unchanged.
 """
 
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -39,6 +61,8 @@ def load_config(path):
     Load and validate a YAML config file.
 
     Raises :exc:`ConfigError` on missing required fields or unknown values.
+    Environment variables in string values are expanded before validation;
+    see module docstring for syntax.
     """
     if not os.path.isfile(path):
         raise ConfigError("Config file not found: {}".format(path))
@@ -49,7 +73,66 @@ def load_config(path):
     if raw is None:
         raise ConfigError("Config file is empty: {}".format(path))
 
+    raw = _expand_env_vars(raw)
     return Config(raw, path)
+
+
+# ---------------------------------------------------------------------------
+# Environment variable interpolation
+# ---------------------------------------------------------------------------
+
+# Matches ${VAR} and ${VAR:-default}; group 1 = name, group 2 = default (or None)
+_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
+
+
+def _expand_env_vars(obj):
+    # type: (Any) -> Any
+    """
+    Recursively expand ``${VAR}`` / ``${VAR:-default}`` in all string values.
+
+    - ``$$`` is converted to a literal ``$`` before variable substitution so
+      it is never treated as the start of a reference.
+    - Raises :exc:`ConfigError` when a variable is referenced without a
+      default and is not set in the environment.
+    - Non-string scalars (int, bool, None, …) are returned unchanged.
+    - Dict keys are never expanded (only values).
+    """
+    if isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_vars(item) for item in obj]
+    if not isinstance(obj, str):
+        return obj  # int, bool, None — leave untouched
+
+    # First convert $$ → a placeholder that survives regex substitution,
+    # then restore it to a literal $ afterwards.
+    _PLACEHOLDER = "\x00DOLLAR\x00"
+    text = obj.replace("$$", _PLACEHOLDER)
+
+    errors = []
+
+    def _replace(m):
+        name = m.group(1)
+        default = m.group(2)  # None when no ":-" clause was present
+        value = os.environ.get(name)
+        if value is not None:
+            return value
+        if default is not None:
+            return default
+        errors.append(name)
+        return m.group(0)  # leave as-is; error reported after scan
+
+    result = _ENV_VAR_RE.sub(_replace, text)
+
+    if errors:
+        raise ConfigError(
+            "Config references undefined environment variable(s): {}. "
+            "Set the variable or use ${{VAR:-default}} syntax.".format(
+                ", ".join("${{{}}}".format(n) for n in errors)
+            )
+        )
+
+    return result.replace(_PLACEHOLDER, "$")
 
 
 # ---------------------------------------------------------------------------
