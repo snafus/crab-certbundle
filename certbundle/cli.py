@@ -86,12 +86,16 @@ def main(ctx, config, verbose, quiet):
     """
     ctx.ensure_object(dict)
 
-    # Logging setup
+    # Initial logging setup — may be refined after config is loaded.
     level = logging.DEBUG if verbose else (logging.ERROR if quiet else logging.INFO)
     logging.basicConfig(
         level=level,
         format="%(levelname)s  %(name)s: %(message)s",
     )
+
+    # Record CLI flags so _apply_logging_config can honour them as overrides.
+    ctx.obj["verbose"] = verbose
+    ctx.obj["quiet"] = quiet
 
     # Config resolution
     if config:
@@ -524,13 +528,59 @@ def _load_config_or_exit(ctx):
         )
         sys.exit(1)
     try:
-        return load_config(path)
+        cfg = load_config(path)
     except ConfigError as exc:
         click.echo("ERROR: Config error: {}".format(exc), err=True)
         sys.exit(1)
     except Exception as exc:
         click.echo("ERROR: Cannot load config '{}': {}".format(path, exc), err=True)
         sys.exit(1)
+    _apply_logging_config(cfg, ctx)
+    return cfg
+
+
+def _apply_logging_config(cfg, ctx):
+    # type: (...) -> None
+    """
+    Apply the ``logging:`` section from *cfg* to the root logger.
+
+    CLI flags (``--verbose`` / ``--quiet``) take priority over the config
+    file level so that ad-hoc overrides always work as expected.
+    """
+    lc = cfg.logging_config
+
+    # Resolve effective log level: CLI flags beat config file beats default.
+    if ctx.obj.get("verbose"):
+        level = logging.DEBUG
+    elif ctx.obj.get("quiet"):
+        level = logging.ERROR
+    else:
+        level_name = lc.get("level", "INFO").upper()
+        level = getattr(logging, level_name, logging.INFO)
+
+    logging.root.setLevel(level)
+    for h in logging.root.handlers:
+        h.setLevel(level)
+
+    # Optional file handler — added once; idempotent on repeated calls.
+    log_file = lc.get("file")
+    if log_file:
+        abs_path = os.path.abspath(log_file)
+        for h in logging.root.handlers:
+            if isinstance(h, logging.FileHandler) and h.baseFilename == abs_path:
+                return  # already attached
+        try:
+            log_dir = os.path.dirname(abs_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            fh = logging.FileHandler(abs_path)
+            fh.setLevel(level)
+            fh.setFormatter(
+                logging.Formatter("%(asctime)s  %(levelname)s  %(name)s: %(message)s")
+            )
+            logging.root.addHandler(fh)
+        except OSError as exc:
+            logger.warning("Could not open log file %s: %s", log_file, exc)
 
 
 def _find_default_config():

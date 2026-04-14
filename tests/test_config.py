@@ -235,3 +235,83 @@ class TestStagingDeviceCheck:
         with mock.patch("certbundle.config._check_staging_device") as mock_check:
             load_config(path)
         mock_check.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# logging: section validation
+# ---------------------------------------------------------------------------
+
+def _write_config(path, pem_dir, out_dir, extra=""):
+    """Write a minimal valid config with optional extra top-level YAML."""
+    with open(path, "w") as fh:
+        fh.write(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "{extra}".format(src=pem_dir, out=out_dir, extra=extra)
+        )
+
+
+class TestLoggingConfig:
+    def test_no_logging_section_accepted(self, tmp_path, pem_dir):
+        path = str(tmp_path / "config.yaml")
+        _write_config(path, pem_dir, str(tmp_path / "out"))
+        cfg = load_config(path)
+        assert cfg.logging_config == {}
+
+    def test_valid_level_accepted(self, tmp_path, pem_dir):
+        path = str(tmp_path / "config.yaml")
+        _write_config(path, pem_dir, str(tmp_path / "out"),
+                      extra="logging:\n  level: DEBUG\n")
+        cfg = load_config(path)
+        assert cfg.logging_config["level"] == "DEBUG"
+
+    def test_all_valid_levels_accepted(self, tmp_path, pem_dir):
+        for lvl in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
+            path = str(tmp_path / "config_{}.yaml".format(lvl))
+            _write_config(path, pem_dir, str(tmp_path / "out"),
+                          extra="logging:\n  level: {}\n".format(lvl))
+            cfg = load_config(path)
+            assert cfg.logging_config["level"] == lvl
+
+    def test_invalid_level_raises(self, tmp_path, pem_dir):
+        path = str(tmp_path / "config.yaml")
+        _write_config(path, pem_dir, str(tmp_path / "out"),
+                      extra="logging:\n  level: VERBOSE\n")
+        with pytest.raises(ConfigError, match="logging.level"):
+            load_config(path)
+
+    def test_numeric_level_raises(self, tmp_path, pem_dir):
+        path = str(tmp_path / "config.yaml")
+        _write_config(path, pem_dir, str(tmp_path / "out"),
+                      extra="logging:\n  level: 10\n")
+        with pytest.raises(ConfigError, match="logging.level"):
+            load_config(path)
+
+    def test_file_key_accepted(self, tmp_path, pem_dir):
+        path = str(tmp_path / "config.yaml")
+        _write_config(path, pem_dir, str(tmp_path / "out"),
+                      extra="logging:\n  file: /var/log/certbundle.log\n")
+        cfg = load_config(path)
+        assert cfg.logging_config["file"] == "/var/log/certbundle.log"
+
+    def test_file_non_string_raises(self, tmp_path, pem_dir):
+        path = str(tmp_path / "config.yaml")
+        _write_config(path, pem_dir, str(tmp_path / "out"),
+                      extra="logging:\n  file: 42\n")
+        with pytest.raises(ConfigError, match="logging.file"):
+            load_config(path)
+
+    def test_logging_not_a_mapping_raises(self, tmp_path, pem_dir):
+        path = str(tmp_path / "config.yaml")
+        _write_config(path, pem_dir, str(tmp_path / "out"),
+                      extra="logging: INFO\n")
+        with pytest.raises(ConfigError, match="logging"):
+            load_config(path)

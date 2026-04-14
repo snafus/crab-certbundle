@@ -460,3 +460,109 @@ class TestBuildSourceError:
         # Should not crash; missing path is a warning, not a fatal error
         assert result.exit_code == 0
         assert "WARNING" in result.output or "does not exist" in result.output
+
+
+# ---------------------------------------------------------------------------
+# logging: config section applied by CLI
+# ---------------------------------------------------------------------------
+
+class TestApplyLoggingConfig:
+    """Verify that the logging: config section adjusts the root logger."""
+
+    def _make_config(self, tmp_path, ca_pem, extra=""):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ca.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n"
+            "{extra}".format(src=str(src), out=str(out), extra=extra)
+        )
+        return str(cfg)
+
+    def test_config_level_debug_applied(self, runner, tmp_path, ca_pem):
+        import logging
+        cfg = self._make_config(tmp_path, ca_pem,
+                                extra="logging:\n  level: DEBUG\n")
+        runner.invoke(main, ["--config", cfg, "show-config"])
+        assert logging.root.level == logging.DEBUG
+
+    def test_config_level_warning_applied(self, runner, tmp_path, ca_pem):
+        import logging
+        cfg = self._make_config(tmp_path, ca_pem,
+                                extra="logging:\n  level: WARNING\n")
+        runner.invoke(main, ["--config", cfg, "show-config"])
+        assert logging.root.level == logging.WARNING
+
+    def test_verbose_flag_overrides_config_level(self, runner, tmp_path, ca_pem):
+        import logging
+        cfg = self._make_config(tmp_path, ca_pem,
+                                extra="logging:\n  level: WARNING\n")
+        runner.invoke(main, ["--verbose", "--config", cfg, "show-config"])
+        assert logging.root.level == logging.DEBUG
+
+    def test_quiet_flag_overrides_config_level(self, runner, tmp_path, ca_pem):
+        import logging
+        cfg = self._make_config(tmp_path, ca_pem,
+                                extra="logging:\n  level: DEBUG\n")
+        runner.invoke(main, ["--quiet", "--config", cfg, "show-config"])
+        assert logging.root.level == logging.ERROR
+
+    def test_log_file_handler_added(self, runner, tmp_path, ca_pem):
+        import logging
+        log_file = str(tmp_path / "logs" / "certbundle.log")
+        cfg = self._make_config(
+            tmp_path, ca_pem,
+            extra="logging:\n  level: INFO\n  file: {}\n".format(log_file),
+        )
+        # Remove any pre-existing FileHandlers to avoid cross-test pollution
+        logging.root.handlers = [
+            h for h in logging.root.handlers
+            if not isinstance(h, logging.FileHandler)
+        ]
+        runner.invoke(main, ["--config", cfg, "show-config"])
+        file_handlers = [
+            h for h in logging.root.handlers if isinstance(h, logging.FileHandler)
+        ]
+        assert any(h.baseFilename == log_file for h in file_handlers)
+        assert os.path.isfile(log_file)
+
+    def test_log_file_handler_idempotent(self, runner, tmp_path, ca_pem):
+        """Invoking twice must not add duplicate FileHandlers."""
+        import logging
+        log_file = str(tmp_path / "certbundle.log")
+        cfg = self._make_config(
+            tmp_path, ca_pem,
+            extra="logging:\n  file: {}\n".format(log_file),
+        )
+        logging.root.handlers = [
+            h for h in logging.root.handlers
+            if not isinstance(h, logging.FileHandler)
+        ]
+        runner.invoke(main, ["--config", cfg, "show-config"])
+        runner.invoke(main, ["--config", cfg, "show-config"])
+        count = sum(
+            1 for h in logging.root.handlers
+            if isinstance(h, logging.FileHandler) and h.baseFilename == log_file
+        )
+        assert count == 1
+
+    def test_unwritable_log_file_emits_warning_not_crash(self, runner, tmp_path, ca_pem):
+        """A log file path that cannot be opened must not crash the CLI."""
+        cfg = self._make_config(
+            tmp_path, ca_pem,
+            extra="logging:\n  file: /no/such/dir/certbundle.log\n",
+        )
+        result = runner.invoke(main, ["--config", cfg, "show-config"])
+        assert result.exit_code == 0

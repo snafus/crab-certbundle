@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_SOURCE_TYPES = ("igtf", "local")
 SUPPORTED_REHASH_MODES = ("auto", "openssl", "builtin")
+_VALID_LOG_LEVELS = frozenset(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +206,24 @@ class Config:
                 raise ConfigError("Profile '{}' must be a mapping".format(name))
             self.profiles[name] = ProfileConfig(name, prof_raw, source_names)
 
-        self.logging_config = raw.get("logging", {})
+        # logging: section — validated here, applied by the CLI after load
+        raw_logging = raw.get("logging", {})
+        if not isinstance(raw_logging, dict):
+            raise ConfigError("'logging' must be a mapping")
+        if raw_logging:
+            lvl = raw_logging.get("level", "INFO")
+            if not isinstance(lvl, str) or lvl.upper() not in _VALID_LOG_LEVELS:
+                raise ConfigError(
+                    "'logging.level' must be one of {}; got {!r}".format(
+                        "/".join(sorted(_VALID_LOG_LEVELS)), lvl
+                    )
+                )
+            log_file = raw_logging.get("file")
+            if log_file is not None and not isinstance(log_file, str):
+                raise ConfigError("'logging.file' must be a string path")
+        self.logging_config = raw_logging
+
+        # refresh: is parsed and reserved for future scheduling support.
         self.refresh_config = raw.get("refresh", {})
 
     def get_source(self, name):
