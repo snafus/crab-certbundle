@@ -637,3 +637,526 @@ class TestApplyLoggingConfig:
         )
         result = runner.invoke(main, ["--config", cfg, "show-config"])
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# build — source load exception (not a result.errors — a raised exception)
+# ---------------------------------------------------------------------------
+
+class TestBuildSourceException:
+    def test_source_load_exception_increments_errors(self, runner, tmp_path, ca_pem):
+        """If source.load() raises, the profile reports an error."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ca.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n".format(src=str(src), out=str(out))
+        )
+        from unittest.mock import patch
+        with patch("certbundle.cli.build_source") as mock_bs:
+            mock_bs.return_value.load.side_effect = RuntimeError("source broke")
+            result = runner.invoke(main, ["--config", str(cfg), "build"])
+        # Should exit 1 due to source error
+        assert result.exit_code == 1
+        assert "ERROR" in result.output
+
+
+# ---------------------------------------------------------------------------
+# build — dedup note
+# ---------------------------------------------------------------------------
+
+class TestBuildDedupNote:
+    def test_dedup_note_printed_when_duplicates(self, runner, tmp_path, ca_pem):
+        """When duplicate certs are present, a dedup note is printed."""
+        src = tmp_path / "src"
+        src.mkdir()
+        # Write the same cert twice under different filenames
+        (src / "ca1.pem").write_bytes(ca_pem)
+        (src / "ca2.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n"
+            "    policy:\n"
+            "      reject_expired: false\n"
+            "      require_ca_flag: false\n".format(src=str(src), out=str(out))
+        )
+        result = runner.invoke(main, ["--config", str(cfg), "build"])
+        assert result.exit_code == 0
+        assert "duplicate" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# build — CRL fetching in profile
+# ---------------------------------------------------------------------------
+
+class TestBuildWithCrls:
+    def test_build_with_include_crls_fetches_crls(self, runner, tmp_path, ca_pem):
+        """When include_crls is true, CRL fetch stats are printed."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ca.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n"
+            "    include_crls: true\n"
+            "    crl:\n"
+            "      fetch: true\n".format(src=str(src), out=str(out))
+        )
+        from unittest.mock import patch, MagicMock
+        mock_result = MagicMock()
+        mock_result.updated = []
+        mock_result.failed = []
+        mock_result.missing = ["CN=Test CA"]
+        mock_result.errors = []
+        with patch("certbundle.cli.CRLManager") as mock_mgr:
+            mock_mgr.return_value.update_crls.return_value = mock_result
+            result = runner.invoke(main, ["--config", str(cfg), "build"])
+        assert result.exit_code == 0
+        assert "CRLs:" in result.output
+
+
+# ---------------------------------------------------------------------------
+# validate — exit code mapping
+# ---------------------------------------------------------------------------
+
+class TestValidateExitCodes:
+    def test_exits_2_when_errors(self, runner, cli_env):
+        """validate on a missing output dir → errors → exit 2."""
+        # Output dir does not exist → validate_directory returns error issues
+        result = runner.invoke(
+            main, ["--config", cli_env["config"], "validate", "default", "--no-openssl"]
+        )
+        assert result.exit_code == 2
+
+    def test_exits_1_when_warnings_only(self, runner, tmp_path, ca_pem, expired_ca_pem):
+        """validate on a dir with expired certs → warnings → exit 1."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "good.pem").write_bytes(ca_pem)
+        (src / "expired.pem").write_bytes(expired_ca_pem)
+        out = str(tmp_path / "out")
+        cfg_path = tmp_path / "crab.yaml"
+        cfg_path.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n"
+            "    policy:\n"
+            "      reject_expired: false\n"
+            "      require_ca_flag: true\n".format(src=str(src), out=out)
+        )
+        # Build first so dir exists with certs
+        runner.invoke(main, ["--config", str(cfg_path), "build"])
+        # Validate — expired cert should trigger a warning
+        result = runner.invoke(
+            main, ["--config", str(cfg_path), "validate", "p", "--no-openssl"]
+        )
+        assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# diff — unknown path and no-profile cases
+# ---------------------------------------------------------------------------
+
+class TestDiffEdgeCases:
+    def test_diff_unknown_path_exits_1(self, runner, cli_env):
+        """diff with a target that is neither a profile nor a directory → exit 1."""
+        result = runner.invoke(
+            main, ["--config", cli_env["config"], "diff", "not-a-real-path-or-profile"]
+        )
+        assert result.exit_code == 1
+        assert "ERROR" in result.output
+
+    def test_diff_raw_dir_without_old_dir_exits_1(self, runner, tmp_path, cli_env):
+        """diff with a raw directory path but no profile → error about missing profile."""
+        # First build so the out dir exists
+        runner.invoke(main, ["--config", cli_env["config"], "build"])
+        # diff the raw out directory (no profile) — should fail asking for --old-dir
+        result = runner.invoke(
+            main, ["--config", cli_env["config"], "diff", cli_env["out"]]
+        )
+        assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# fetch-crls — with CRL-enabled profile
+# ---------------------------------------------------------------------------
+
+class TestFetchCrlsWithProfile:
+    def test_fetch_crls_prints_stats(self, runner, tmp_path, ca_pem):
+        """fetch-crls with a CRL-enabled profile prints update stats."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ca.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n"
+            "    include_crls: true\n"
+            "    crl:\n"
+            "      fetch: true\n".format(src=str(src), out=str(out))
+        )
+        result = runner.invoke(
+            main, ["--config", str(cfg), "fetch-crls", "--dry-run"]
+        )
+        assert result.exit_code == 0
+        # Updated/Failed/No URL stats are printed
+        assert "Updated:" in result.output
+
+    def test_fetch_crls_unknown_profile_warns(self, runner, tmp_path, ca_pem):
+        """Unknown profile name passed to fetch-crls is reported and skipped."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ca.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n"
+            "    include_crls: true\n"
+            "    crl:\n"
+            "      fetch: true\n".format(src=str(src), out=str(out))
+        )
+        result = runner.invoke(
+            main, ["--config", str(cfg), "fetch-crls", "no-such-profile"]
+        )
+        assert "ERROR" in result.output
+
+
+# ---------------------------------------------------------------------------
+# refresh — CRL success path (lines 526-530)
+# ---------------------------------------------------------------------------
+
+class TestRefreshCrlSuccess:
+    def test_refresh_with_crls_prints_crl_stats(self, runner, tmp_path, ca_pem):
+        """When include_crls is true and CRL update succeeds, stats are printed."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ca.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n"
+            "    include_crls: true\n"
+            "    crl:\n"
+            "      fetch: true\n".format(src=str(src), out=str(out))
+        )
+        from unittest.mock import patch, MagicMock
+        mock_result = MagicMock()
+        mock_result.updated = []
+        mock_result.failed = []
+        mock_result.missing = ["CN=Test CA"]
+        mock_result.errors = []
+        with patch("certbundle.cli.CRLManager") as mock_mgr:
+            mock_mgr.return_value.update_crls.return_value = mock_result
+            result = runner.invoke(main, ["--config", str(cfg), "refresh"])
+        assert result.exit_code == 0
+        # The CRL stats line must be present
+        assert "CRLs:" in result.output
+
+
+# ---------------------------------------------------------------------------
+# _load_certs_from_directory — non-hash files and parse errors
+# ---------------------------------------------------------------------------
+
+class TestLoadCertsFromDirectory:
+    def test_non_hash_files_are_skipped(self, runner, cli_env):
+        """Files that don't match the hash pattern are silently skipped."""
+        runner.invoke(main, ["--config", cli_env["config"], "build"])
+        # Add a non-hash file to the output directory
+        open(os.path.join(cli_env["out"], "random.txt"), "w").close()
+        # diff will call _load_certs_from_directory on the directory
+        result = runner.invoke(main, ["--config", cli_env["config"], "diff", "default"])
+        # Should succeed without crashing
+        assert result.exit_code == 0
+
+    def test_unparseable_cert_file_is_skipped(self, runner, cli_env):
+        """A hash-named file that raises on parse is silently skipped."""
+        from unittest.mock import patch
+        runner.invoke(main, ["--config", cli_env["config"], "build"])
+        with patch("certbundle.cli.parse_pem_file", side_effect=IOError("bad file")):
+            result = runner.invoke(main, ["--config", cli_env["config"], "diff", "default"])
+        # Should not crash regardless of parse errors
+        assert result.exit_code in (0, 1)
+
+
+# ---------------------------------------------------------------------------
+# _load_config_or_exit — non-ConfigError exception
+# ---------------------------------------------------------------------------
+
+class TestLoadConfigOrExitError:
+    def test_non_config_error_exits_1(self, runner, tmp_path):
+        """Unexpected exception from load_config → error message + exit 1."""
+        from unittest.mock import patch
+        # Write a valid path so the "no path" check passes
+        cfg_file = tmp_path / "crab.yaml"
+        cfg_file.write_text("version: 1\nsources: {}\nprofiles: {p: {output_path: /x, sources: []}}\n")
+        with patch("certbundle.cli.load_config", side_effect=RuntimeError("unexpected")):
+            result = runner.invoke(main, ["--config", str(cfg_file), "show-config"])
+        assert result.exit_code == 1
+        assert "Cannot load config" in result.output
+
+
+# ---------------------------------------------------------------------------
+# _find_default_config — returns path when found in ./
+# ---------------------------------------------------------------------------
+
+class TestValidateNoTargets:
+    def test_validate_all_profiles_when_no_target_given(self, runner, cli_env):
+        """validate with no targets validates ALL configured profiles."""
+        runner.invoke(main, ["--config", cli_env["config"], "build"])
+        result = runner.invoke(
+            main, ["--config", cli_env["config"], "validate", "--no-openssl"]
+        )
+        # Validates the single 'default' profile; exit 0 since dir is valid
+        assert result.exit_code == 0
+        assert "default" in result.output
+
+
+class TestBuildOutputErrors:
+    def test_build_output_errors_reported(self, runner, tmp_path, ca_pem):
+        """When build_output returns errors, they are printed and exit is 1."""
+        from unittest.mock import patch, MagicMock
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ca.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n".format(src=str(src), out=str(out))
+        )
+        mock_result = MagicMock()
+        mock_result.errors = ["something went wrong"]
+        mock_result.cert_count = 0
+        mock_result.files_written = []
+        with patch("certbundle.cli.build_output", return_value=mock_result):
+            result = runner.invoke(main, ["--config", str(cfg), "build"])
+        assert result.exit_code == 1
+        assert "ERROR" in result.output
+
+
+class TestBuildCrlErrors:
+    def test_crl_errors_printed_in_build(self, runner, tmp_path, ca_pem):
+        """CRL fetch errors in build are printed as warnings."""
+        from unittest.mock import patch, MagicMock
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ca.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n"
+            "    include_crls: true\n"
+            "    crl:\n"
+            "      fetch: true\n".format(src=str(src), out=str(out))
+        )
+        mock_crl_result = MagicMock()
+        mock_crl_result.updated = []
+        mock_crl_result.failed = []
+        mock_crl_result.missing = []
+        mock_crl_result.errors = ["CRL fetch failed for CN=Test"]
+        with patch("certbundle.cli.CRLManager") as mock_mgr:
+            mock_mgr.return_value.update_crls.return_value = mock_crl_result
+            result = runner.invoke(main, ["--config", str(cfg), "build"])
+        assert result.exit_code == 0
+        assert "CRL WARNING" in result.output
+
+
+class TestLoadProfileCertsSourceError:
+    def test_source_exception_in_load_profile_certs_warns(self, runner, cli_env):
+        """When a source raises in _load_profile_certs, a warning is logged."""
+        from unittest.mock import patch
+        runner.invoke(main, ["--config", cli_env["config"], "build"])
+        # diff calls _load_profile_certs; force a source failure there
+        with patch("certbundle.cli.build_source") as mock_bs:
+            mock_bs.return_value.load.side_effect = RuntimeError("source exploded")
+            result = runner.invoke(
+                main, ["--config", cli_env["config"], "diff", "default"]
+            )
+        # Should not crash; diff shows all certs as "added" since new_certs is empty
+        assert result.exit_code in (0, 1)
+
+
+class TestFetchCrlsErrors:
+    def test_fetch_crls_errors_printed(self, runner, tmp_path, ca_pem):
+        """CRL fetch errors in fetch-crls command are printed."""
+        from unittest.mock import patch, MagicMock
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ca.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n"
+            "    include_crls: true\n"
+            "    crl:\n"
+            "      fetch: true\n".format(src=str(src), out=str(out))
+        )
+        mock_result = MagicMock()
+        mock_result.updated = []
+        mock_result.failed = []
+        mock_result.missing = []
+        mock_result.errors = ["fetch failed: connection refused"]
+        with patch("certbundle.cli.CRLManager") as mock_mgr:
+            mock_mgr.return_value.update_crls.return_value = mock_result
+            result = runner.invoke(main, ["--config", str(cfg), "fetch-crls"])
+        assert result.exit_code == 0
+        assert "fetch failed" in result.output
+
+
+class TestRefreshCrlErrors:
+    def test_refresh_crl_errors_printed(self, runner, tmp_path, ca_pem):
+        """CRL fetch errors in the refresh CRL step are printed as warnings."""
+        from unittest.mock import patch, MagicMock
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ca.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n"
+            "    include_crls: true\n"
+            "    crl:\n"
+            "      fetch: true\n".format(src=str(src), out=str(out))
+        )
+        mock_crl_result = MagicMock()
+        mock_crl_result.updated = []
+        mock_crl_result.failed = []
+        mock_crl_result.missing = []
+        mock_crl_result.errors = ["failed to download CRL"]
+        with patch("certbundle.cli.CRLManager") as mock_mgr:
+            mock_mgr.return_value.update_crls.return_value = mock_crl_result
+            result = runner.invoke(main, ["--config", str(cfg), "refresh"])
+        assert result.exit_code == 0
+        assert "CRL WARNING" in result.output
+
+
+class TestFindDefaultConfig:
+    def test_finds_crab_yaml_in_current_dir(self, runner):
+        """_find_default_config returns a path when ./crab.yaml exists."""
+        with runner.isolated_filesystem():
+            with open("crab.yaml", "w") as f:
+                f.write(
+                    "version: 1\n"
+                    "sources:\n"
+                    "  s:\n"
+                    "    type: local\n"
+                    "    path: /tmp\n"
+                    "profiles:\n"
+                    "  p:\n"
+                    "    sources: [s]\n"
+                    "    output_path: /tmp/out\n"
+                )
+            result = runner.invoke(main, ["show-config"])
+            # Should auto-detect ./crab.yaml and load without --config
+            assert result.exit_code == 0

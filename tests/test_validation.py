@@ -3,6 +3,7 @@
 import os
 import re
 import pytest
+from unittest.mock import patch, MagicMock
 
 from certbundle.cert import parse_pem_data
 from certbundle.output import OutputProfile, build_output
@@ -11,6 +12,8 @@ from certbundle.validation import (
     has_errors,
     has_warnings,
     ValidationIssue,
+    _openssl_verify_spot_check,
+    _validate_cert_file,
 )
 
 
@@ -165,10 +168,138 @@ class TestOpensslSpotCheck:
     def test_skips_gracefully_when_openssl_absent(self, tmp_path, ca_pem):
         """validate_directory with run_openssl=True should not crash even
         when the openssl binary is absent; it should just produce no extra issues."""
-        from unittest.mock import patch
         d = _make_output(tmp_path, [ca_pem], name="ssl-check")
         with patch("subprocess.run", side_effect=FileNotFoundError("openssl not found")):
             issues = validate_directory(d, check_hashes=False, run_openssl=True)
         # Should have no openssl-related errors
         openssl_errors = [i for i in issues if i.level == "error"]
         assert openssl_errors == []
+
+    def test_generic_exception_produces_info_not_crash(self, tmp_path, ca_pem):
+        """A non-FileNotFoundError exception must be caught and reported as info."""
+        d = _make_output(tmp_path, [ca_pem], name="ssl-exc")
+        files = [(e, os.path.join(d, e)) for e in os.listdir(d)
+                 if re.match(r"^[0-9a-f]{8}\.\d+$", e)]
+        with patch("subprocess.run", side_effect=RuntimeError("unexpected")):
+            issues = _openssl_verify_spot_check(d, files[:1])
+        # Should produce an info issue, not propagate the exception
+        assert any(i.level == "info" for i in issues)
+
+    def test_openssl_failure_not_selfsigned_produces_warning(self, tmp_path, ca_pem):
+        """Non-zero return code that is NOT a self-signed error → warning."""
+        d = _make_output(tmp_path, [ca_pem], name="ssl-warn")
+        files = [(e, os.path.join(d, e)) for e in os.listdir(d)
+                 if re.match(r"^[0-9a-f]{8}\.\d+$", e)]
+        mock_result = MagicMock()
+        mock_result.returncode = 2
+        mock_result.stdout = b""
+        mock_result.stderr = b"error: unknown certificate"
+        with patch("subprocess.run", return_value=mock_result):
+            issues = _openssl_verify_spot_check(d, files[:1])
+        assert any(i.level == "warning" for i in issues)
+
+    def test_openssl_success_zero_return_no_issues(self, tmp_path, ca_pem):
+        """Zero return code from openssl verify should add no issues."""
+        d = _make_output(tmp_path, [ca_pem], name="ssl-ok")
+        files = [(e, os.path.join(d, e)) for e in os.listdir(d)
+                 if re.match(r"^[0-9a-f]{8}\.\d+$", e)]
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"OK"
+        mock_result.stderr = b""
+        with patch("subprocess.run", return_value=mock_result):
+            issues = _openssl_verify_spot_check(d, files[:1])
+        assert issues == []
+
+
+# ---------------------------------------------------------------------------
+# Directory entries: CRL files and metadata files are silently skipped
+# ---------------------------------------------------------------------------
+
+class TestDirectoryEntryTypes:
+    def test_crl_file_not_counted_as_cert(self, tmp_path, ca_pem):
+        """*.r0 CRL files in the directory should not trigger errors."""
+        d = _make_output(tmp_path, [ca_pem], name="crl-entries")
+        # Drop a fake CRL file alongside the cert
+        (d / "a1b2c3d4.r0") if False else open(os.path.join(d, "a1b2c3d4.r0"), "wb").close()
+        issues = validate_directory(d, check_hashes=False, run_openssl=False)
+        # No error about the .r0 file; cert count info still present
+        assert not any("a1b2c3d4.r0" in i.message for i in issues if i.level == "error")
+
+    def test_info_files_silently_accepted(self, tmp_path, ca_pem):
+        """.info, .signing_policy, .namespaces files are quietly ignored."""
+        d = _make_output(tmp_path, [ca_pem], name="meta-entries")
+        open(os.path.join(d, "TestCA.info"), "w").close()
+        open(os.path.join(d, "TestCA.signing_policy"), "w").close()
+        issues = validate_directory(d, check_hashes=False, run_openssl=False)
+        # No unrecognised-file info about them
+        assert not any(
+            "TestCA.info" in i.message or "TestCA.signing_policy" in i.message
+            for i in issues
+        )
+
+    def test_subdirectory_not_treated_as_cert(self, tmp_path, ca_pem):
+        """Subdirectories inside the CApath dir are silently skipped."""
+        d = _make_output(tmp_path, [ca_pem], name="subdir-entry")
+        os.makedirs(os.path.join(d, "subdir"))
+        issues = validate_directory(d, check_hashes=False, run_openssl=False)
+        # No error caused by the subdirectory
+        assert not any("subdir" in (i.file or "") for i in issues if i.level == "error")
+
+
+# ---------------------------------------------------------------------------
+# _validate_cert_file — parse failure and empty cert cases
+# ---------------------------------------------------------------------------
+
+class TestValidateCertFileParsing:
+    def test_parse_error_produces_error_issue(self, tmp_path):
+        """parse_pem_file raising an exception produces a 'Cannot parse' error."""
+        cert_file = str(tmp_path / "a1b2c3d4.0")
+        open(cert_file, "wb").write(b"dummy")
+        with patch("certbundle.validation.parse_pem_file", side_effect=ValueError("bad cert")):
+            issues = _validate_cert_file("a1b2c3d4.0", cert_file, {}, {}, check_hashes=False)
+        assert any(i.level == "error" and "Cannot parse" in i.message for i in issues)
+
+    def test_empty_cert_produces_error_issue(self, tmp_path):
+        """A PEM file that parses but yields zero certs gets an error."""
+        empty_file = str(tmp_path / "a1b2c3d4.0")
+        open(empty_file, "wb").write(b"")
+        # parse_pem_file on an empty file returns []
+        issues = _validate_cert_file("a1b2c3d4.0", empty_file, {}, {}, check_hashes=False)
+        assert any(i.level == "error" and "No certificate" in i.message for i in issues)
+
+
+# ---------------------------------------------------------------------------
+# Duplicate fingerprint detection
+# ---------------------------------------------------------------------------
+
+class TestDuplicateFingerprint:
+    def test_duplicate_fingerprint_across_files_warns(self, tmp_path, ca_pem):
+        """The same cert in two files should produce a duplicate warning."""
+        from certbundle.cert import parse_pem_data
+        from certbundle.rehash import compute_subject_hash
+        certs = parse_pem_data(ca_pem)
+        h = compute_subject_hash(certs[0])
+        # Write the same cert under two different collision-index filenames
+        (tmp_path / (h + ".0")).write_bytes(ca_pem)
+        (tmp_path / (h + ".1")).write_bytes(ca_pem)
+        issues = validate_directory(str(tmp_path), check_hashes=False, run_openssl=False)
+        warn_msgs = [i.message for i in issues if i.level == "warning"]
+        assert any("Duplicate" in m for m in warn_msgs)
+
+
+# ---------------------------------------------------------------------------
+# Non-CA certificate warning
+# ---------------------------------------------------------------------------
+
+class TestNonCACertWarning:
+    def test_non_ca_cert_produces_warning(self, tmp_path, leaf_pem):
+        """A leaf (non-CA) cert written into a CApath dir should warn."""
+        from certbundle.cert import parse_pem_data
+        from certbundle.rehash import compute_subject_hash
+        certs = parse_pem_data(leaf_pem)
+        h = compute_subject_hash(certs[0])
+        (tmp_path / (h + ".0")).write_bytes(leaf_pem)
+        issues = validate_directory(str(tmp_path), check_hashes=False, run_openssl=False)
+        warn_msgs = [i.message for i in issues if i.level == "warning"]
+        assert any("CA flag" in m for m in warn_msgs)

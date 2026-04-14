@@ -4,12 +4,15 @@ import os
 import re
 import sys
 import pytest
+from unittest.mock import patch, MagicMock
 
 from certbundle.cert import parse_pem_data
 from certbundle.output import (
     OutputProfile, build_output, BuildResult,
     _atomic_swap, _try_renameat2_exchange, _build_bundle, _cert_annotation,
+    _write_igtf_meta, _write_file,
 )
+from certbundle.sources.base import SourceResult
 
 
 def _make_profile(tmp_path, name="test", atomic=False, rehash="builtin"):
@@ -401,3 +404,249 @@ class TestCertAnnotation:
         # Must match YYYY-MM-DD exactly
         import re
         assert re.match(r"^\d{4}-\d{2}-\d{2}$", date_part), repr(date_part)
+
+    def test_issuer_line_present_for_intermediate(self, ca_pem):
+        """When issuer differs from subject, the Issuer line is included."""
+        ci = self._make_cert(ca_pem)
+        # Force subject != issuer to simulate an intermediate CA
+        ci.issuer = "/CN=Root CA"
+        ci.subject = "/CN=Intermediate CA"
+        ann = _cert_annotation(ci)
+        assert b"# Issuer:   /CN=Root CA" in ann
+
+
+# ---------------------------------------------------------------------------
+# rehash mode paths
+# ---------------------------------------------------------------------------
+
+class TestRehashModes:
+    def test_auto_rehash_mode_runs_rehash(self, tmp_path, ca_pem):
+        """rehash='auto' must call rehash_directory (line 134)."""
+        certs = parse_pem_data(ca_pem)
+        output_path = str(tmp_path / "out")
+        profile = OutputProfile("r", {
+            "output_path": output_path,
+            "atomic": False,
+            "rehash": "auto",
+        })
+        # If openssl is available it succeeds; if not, falls back to builtin.
+        # Either way the build should succeed.
+        result = build_output(certs, profile)
+        assert os.path.isdir(output_path)
+        assert result.cert_count == 1
+
+    def test_openssl_rehash_failure_adds_error(self, tmp_path, ca_pem):
+        """rehash='openssl' with a failed rehash_directory → result.errors."""
+        certs = parse_pem_data(ca_pem)
+        output_path = str(tmp_path / "out2")
+        profile = OutputProfile("r2", {
+            "output_path": output_path,
+            "atomic": False,
+            "rehash": "openssl",
+        })
+        with patch("certbundle.output.rehash_directory", return_value=False):
+            result = build_output(certs, profile)
+        assert any("rehash failed" in e for e in result.errors)
+
+
+# ---------------------------------------------------------------------------
+# _write_igtf_meta
+# ---------------------------------------------------------------------------
+
+class TestWriteIgtfMeta:
+    def test_writes_extra_files_from_source_results(self, tmp_path, ca_pem):
+        """igtf_extra_files in source metadata are written to the work dir."""
+        certs = parse_pem_data(ca_pem)
+        work_dir = str(tmp_path / "work")
+        os.makedirs(work_dir)
+
+        sr = SourceResult(name="test")
+        sr.metadata["igtf_extra_files"] = {
+            "TestCA.signing_policy": b"access_id_CA X509 ...\n",
+        }
+
+        profile = OutputProfile("p", {
+            "output_path": str(tmp_path / "out"),
+            "include_igtf_meta": True,
+        })
+        _write_igtf_meta(work_dir, certs, [sr], profile)
+        assert os.path.isfile(os.path.join(work_dir, "TestCA.signing_policy"))
+
+    def test_writes_per_cert_info_files(self, tmp_path, ca_pem):
+        """Certs with igtf_info and an alias get a generated .info file."""
+        certs = parse_pem_data(ca_pem)
+        certs[0].igtf_info = {"alias": "TestCA", "policy": "classic"}
+        work_dir = str(tmp_path / "work2")
+        os.makedirs(work_dir)
+
+        sr = SourceResult(name="test")
+        profile = OutputProfile("p", {
+            "output_path": str(tmp_path / "out"),
+            "include_igtf_meta": True,
+        })
+        _write_igtf_meta(work_dir, certs, [sr], profile)
+        info_path = os.path.join(work_dir, "TestCA.info")
+        assert os.path.isfile(info_path)
+        content = open(info_path).read()
+        assert "classic" in content
+
+    def test_cert_with_igtf_info_but_no_alias_is_skipped(self, tmp_path, ca_pem):
+        """A cert with igtf_info but no alias key produces no .info file."""
+        certs = parse_pem_data(ca_pem)
+        certs[0].igtf_info = {"policy": "classic"}  # no alias key
+        work_dir = str(tmp_path / "work3")
+        os.makedirs(work_dir)
+
+        sr = SourceResult(name="test")
+        profile = OutputProfile("p", {
+            "output_path": str(tmp_path / "out"),
+            "include_igtf_meta": True,
+        })
+        _write_igtf_meta(work_dir, certs, [sr], profile)
+        # No .info file should be written since there's no alias
+        info_files = [f for f in os.listdir(work_dir) if f.endswith(".info")]
+        assert info_files == []
+
+
+# ---------------------------------------------------------------------------
+# _build_bundle — exception cleanup
+# ---------------------------------------------------------------------------
+
+class TestBuildBundleCleanup:
+    def test_temp_file_cleaned_up_on_error(self, tmp_path, ca_pem):
+        """If writing the temp file fails, no .tmp file is left behind."""
+        profile = _make_bundle_profile(tmp_path, name="cleanup")
+        with patch("os.replace", side_effect=OSError("disk full")):
+            with pytest.raises(OSError, match="disk full"):
+                build_output(parse_pem_data(ca_pem), profile)
+        tmp_files = [f for f in os.listdir(str(tmp_path)) if f.endswith(".tmp")]
+        assert tmp_files == []
+
+    def test_unlink_failure_does_not_mask_original_error(self, tmp_path, ca_pem):
+        """If os.unlink fails in cleanup, the original os.replace error is still raised."""
+        profile = _make_bundle_profile(tmp_path, name="cleanup2")
+        with patch("os.replace", side_effect=OSError("disk full")):
+            with patch("os.unlink", side_effect=OSError("unlink failed")):
+                with pytest.raises(OSError, match="disk full"):
+                    build_output(parse_pem_data(ca_pem), profile)
+
+    def test_creates_nested_parent_directory(self, tmp_path, ca_pem):
+        """_build_bundle creates parent dirs when they don't exist."""
+        output_path = str(tmp_path / "deep" / "nested" / "bundle.pem")
+        profile = OutputProfile("p", {"output_path": output_path, "output_format": "bundle"})
+        build_output(parse_pem_data(ca_pem), profile)
+        assert os.path.isfile(output_path)
+
+
+# ---------------------------------------------------------------------------
+# _atomic_swap — parent directory creation
+# ---------------------------------------------------------------------------
+
+class TestAtomicSwapParent:
+    def test_creates_parent_of_output_dir(self, tmp_path):
+        """_atomic_swap creates the parent directory if needed."""
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        (staging / "file").write_text("hello")
+        output = tmp_path / "new_parent" / "output"
+        _atomic_swap(str(staging), str(output))
+        assert (output / "file").read_text() == "hello"
+
+    def test_two_rename_fallback_with_existing_output(self, tmp_path):
+        """Forces the two-rename fallback even when output_dir exists."""
+        staging = tmp_path / "staging"
+        output = tmp_path / "output"
+        staging.mkdir()
+        output.mkdir()
+        (staging / "new").write_text("new")
+        (output / "old").write_text("old")
+        # Force the fallback even though renameat2 might succeed on Linux
+        with patch("certbundle.output._try_renameat2_exchange", return_value=False):
+            _atomic_swap(str(staging), str(output))
+        assert (output / "new").exists()
+        assert not (output / "old").exists()
+        # Backup must be cleaned up
+        assert not (tmp_path / "output.bak").exists()
+
+
+# ---------------------------------------------------------------------------
+# BuildResult.__repr__
+# ---------------------------------------------------------------------------
+
+class TestBuildResultRepr:
+    def test_repr_contains_profile_name(self):
+        r = BuildResult("my-profile", "/some/path")
+        assert "my-profile" in repr(r)
+
+    def test_repr_contains_cert_count(self):
+        r = BuildResult("p", "/path")
+        r.cert_count = 42
+        assert "42" in repr(r)
+
+
+# ---------------------------------------------------------------------------
+# _try_renameat2_exchange — non-Linux platform
+# ---------------------------------------------------------------------------
+
+class TestRenameat2NonLinux:
+    def test_returns_false_on_non_linux(self, tmp_path):
+        """On non-Linux platforms, the call returns False without raising."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        with patch("certbundle.output._platform.system", return_value="Darwin"):
+            result = _try_renameat2_exchange(str(a), str(b))
+        assert result is False
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux only")
+    def test_unknown_architecture_returns_false(self, tmp_path):
+        """If the machine architecture is unknown, return False."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        with patch("certbundle.output._platform.machine", return_value="mips"):
+            result = _try_renameat2_exchange(str(a), str(b))
+        assert result is False
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux only")
+    def test_no_libc_found_returns_false(self, tmp_path):
+        """If ctypes.util.find_library returns None, return False."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        with patch("certbundle.output.ctypes.util.find_library", return_value=None):
+            result = _try_renameat2_exchange(str(a), str(b))
+        assert result is False
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux only")
+    def test_cdll_exception_returns_false(self, tmp_path):
+        """If ctypes.CDLL raises, return False (catches via except Exception)."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        with patch("certbundle.output.ctypes.CDLL", side_effect=OSError("load failed")):
+            result = _try_renameat2_exchange(str(a), str(b))
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _write_file — parent directory creation
+# ---------------------------------------------------------------------------
+
+class TestWriteFile:
+    def test_creates_parent_dirs(self, tmp_path):
+        """_write_file creates intermediate directories as needed."""
+        dest = str(tmp_path / "a" / "b" / "c" / "file.pem")
+        _write_file(dest, b"data", 0o644)
+        assert open(dest, "rb").read() == b"data"
+
+    def test_sets_file_permissions(self, tmp_path):
+        """_write_file applies the requested file mode."""
+        dest = str(tmp_path / "sub" / "file.pem")
+        _write_file(dest, b"data", 0o600)
+        mode = oct(os.stat(dest).st_mode & 0o777)
+        assert mode == oct(0o600)

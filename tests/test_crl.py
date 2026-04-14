@@ -2,6 +2,7 @@
 
 import os
 import pytest
+from unittest.mock import patch, MagicMock
 
 from certbundle.cert import parse_pem_data
 from certbundle.crl import (
@@ -10,6 +11,7 @@ from certbundle.crl import (
     CRLUpdateResult,
     _parse_crl_date,
     _parse_crl_field,
+    _parse_crl_file,
     _der_to_pem_crl,
     _safe_abspath,
 )
@@ -387,3 +389,206 @@ class TestValidateCrls:
         with patch("certbundle.crl._parse_crl_file", return_value=stale_info):
             warnings = mgr.validate_crls(certs)
         assert any("Stale CRL" in w for w in warnings)
+
+    def test_warns_when_parse_raises(self, tmp_path, ca_pem):
+        """_parse_crl_file raising must produce a warning, not crash."""
+        certs = parse_pem_data(ca_pem)
+        mgr = CRLManager({}, str(tmp_path))
+        issuer_hash = mgr._get_issuer_hash(certs[0])
+        (tmp_path / (issuer_hash + ".r0")).write_bytes(_FAKE_PEM_CRL)
+        with patch("certbundle.crl._parse_crl_file", side_effect=IOError("bad CRL")):
+            warnings = mgr.validate_crls(certs)
+        assert any("Cannot parse CRL" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# CRLInfo.is_stale with next_update=None
+# ---------------------------------------------------------------------------
+
+class TestCRLInfoIsStaleNone:
+    def test_stale_when_next_update_none(self):
+        info = CRLInfo(
+            issuer_hash="aa",
+            issuer_dn="/CN=CA",
+            this_update=datetime.now(timezone.utc),
+            next_update=None,
+        )
+        assert info.is_stale() is True
+
+
+# ---------------------------------------------------------------------------
+# CRLManager.update_crls — live paths (mocked network)
+# ---------------------------------------------------------------------------
+
+class TestCRLManagerUpdateLive:
+    def test_creates_missing_crl_path(self, tmp_path, ca_pem):
+        """crl_path is created if it does not exist yet."""
+        crl_dir = str(tmp_path / "nonexistent" / "crls")
+        mgr = CRLManager({"crl_path": crl_dir}, str(tmp_path))
+        ci = parse_pem_data(ca_pem)[0]
+        # No URLs on the test cert → nothing fetched, but dir is created
+        mgr.update_crls([ci])
+        assert os.path.isdir(crl_dir)
+
+    def test_successful_fetch_adds_to_updated(self, tmp_path, ca_pem):
+        """A successful CRL fetch adds the URL to result.updated."""
+        ci = parse_pem_data(ca_pem)[0]
+        ci.igtf_info = {"crlurl": "https://example.com/test.crl"}
+        mgr = CRLManager({"sources": ["igtf"]}, str(tmp_path))
+        with patch.object(mgr, "_fetch_crl", return_value=_FAKE_PEM_CRL):
+            with patch.object(mgr, "_get_issuer_hash", return_value="a1b2c3d4"):
+                result = mgr.update_crls([ci], dry_run=False)
+        assert len(result.updated) == 1
+        assert result.updated[0] == "https://example.com/test.crl"
+        assert len(result.failed) == 0
+
+    def test_all_urls_fail_adds_to_failed(self, tmp_path, ca_pem):
+        """When every URL fails, the subject ends up in result.failed."""
+        ci = parse_pem_data(ca_pem)[0]
+        ci.igtf_info = {"crlurl": "https://example.com/test.crl"}
+        mgr = CRLManager({"sources": ["igtf"]}, str(tmp_path))
+        with patch.object(mgr, "_fetch_crl", side_effect=IOError("network error")):
+            result = mgr.update_crls([ci], dry_run=False)
+        assert ci.subject in result.failed
+        assert len(result.errors) == 1
+
+
+# ---------------------------------------------------------------------------
+# CRLManager._fetch_crl
+# ---------------------------------------------------------------------------
+
+class TestFetchCrl:
+    def test_fetch_crl_calls_download_to_bytes(self, tmp_path):
+        """_fetch_crl delegates to download_to_bytes."""
+        mgr = CRLManager({}, str(tmp_path))
+        fake_data = b"CRL data"
+        with patch("certbundle.sources.http.download_to_bytes", return_value=fake_data) as mock:
+            result = mgr._fetch_crl("https://example.com/test.crl")
+        assert result == fake_data
+        assert mock.call_count == 1
+
+    def test_fetch_crl_passes_verify_tls(self, tmp_path):
+        """verify_tls from config is forwarded to download_to_bytes."""
+        mgr = CRLManager({"verify_tls": False}, str(tmp_path))
+        with patch("certbundle.sources.http.download_to_bytes", return_value=b"data") as mock:
+            mgr._fetch_crl("https://example.com/test.crl")
+        _, kwargs = mock.call_args
+        assert kwargs.get("verify_tls") is False
+
+
+# ---------------------------------------------------------------------------
+# CRLManager._write_crl — exception cleanup
+# ---------------------------------------------------------------------------
+
+class TestWriteCrlCleanup:
+    def test_temp_file_removed_on_write_error(self, tmp_path):
+        """If os.replace fails, the .tmp file must be cleaned up."""
+        mgr = CRLManager({}, str(tmp_path))
+        with patch("os.replace", side_effect=OSError("disk full")):
+            with pytest.raises(OSError, match="disk full"):
+                mgr._write_crl(_FAKE_PEM_CRL, "a1b2c3d4")
+        tmp_files = [f for f in os.listdir(str(tmp_path)) if f.endswith(".tmp")]
+        assert tmp_files == []
+
+    def test_unlink_failure_in_cleanup_does_not_mask_original_error(self, tmp_path):
+        """If both os.replace and os.unlink fail, the original error is raised."""
+        mgr = CRLManager({}, str(tmp_path))
+        with patch("os.replace", side_effect=OSError("disk full")):
+            with patch("os.unlink", side_effect=OSError("unlink failed")):
+                with pytest.raises(OSError, match="disk full"):
+                    mgr._write_crl(_FAKE_PEM_CRL, "a1b2c3d4")
+
+
+# ---------------------------------------------------------------------------
+# _der_to_pem_crl — openssl unavailable paths
+# ---------------------------------------------------------------------------
+
+class TestDerToPemCrlFallbacks:
+    def test_returns_raw_when_openssl_not_found(self):
+        """DER data is returned as-is when openssl binary is absent."""
+        data = b"\x30\x82\x00\x00"
+        with patch("subprocess.run", side_effect=FileNotFoundError("openssl")):
+            result = _der_to_pem_crl(data)
+        assert result == data
+
+    def test_returns_raw_on_oserror(self):
+        """DER data is returned as-is when subprocess.run raises OSError."""
+        data = b"\x30\x82\x00\x00"
+        with patch("subprocess.run", side_effect=OSError("permission denied")):
+            result = _der_to_pem_crl(data)
+        assert result == data
+
+    def test_returns_raw_when_subprocess_times_out(self):
+        """DER data is returned as-is on timeout."""
+        import subprocess
+        data = b"\x30\x82\x01\x01"
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("openssl", 10)):
+            result = _der_to_pem_crl(data)
+        assert result == data
+
+    def test_returns_raw_when_openssl_returns_nonzero(self):
+        """If openssl returns non-zero, fall back to raw data."""
+        data = b"\x30\x82\x00\x00"
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = b""
+        with patch("subprocess.run", return_value=mock_result):
+            result = _der_to_pem_crl(data)
+        assert result == data
+
+
+# ---------------------------------------------------------------------------
+# _parse_crl_file
+# ---------------------------------------------------------------------------
+
+class TestParseCrlFile:
+    def test_parses_dates_and_issuer(self, tmp_path):
+        """_parse_crl_file extracts thisUpdate, nextUpdate, and issuer DN."""
+        crl_path = str(tmp_path / "test.r0")
+        open(crl_path, "wb").close()
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = (
+            b"        Last Update: Jan  1 00:00:00 2025 GMT\n"
+            b"        Next Update: Jan  8 00:00:00 2025 GMT\n"
+            b"        Issuer: C=GB, CN=Test CA\n"
+        )
+        with patch("subprocess.run", return_value=mock_result):
+            info = _parse_crl_file(crl_path)
+        assert info.issuer_dn == "C=GB, CN=Test CA"
+        assert info.this_update is not None
+        assert info.next_update is not None
+        assert info.next_update.year == 2025
+
+    def test_missing_dates_return_none(self, tmp_path):
+        """Missing date lines produce None for this_update / next_update."""
+        crl_path = str(tmp_path / "test.r0")
+        open(crl_path, "wb").close()
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"Certificate Revocation List (CRL):\n"
+        with patch("subprocess.run", return_value=mock_result):
+            info = _parse_crl_file(crl_path)
+        assert info.this_update is None
+        assert info.next_update is None
+
+    def test_raises_ioerror_on_subprocess_exception(self, tmp_path):
+        """If subprocess.run raises, _parse_crl_file wraps it as IOError."""
+        crl_path = str(tmp_path / "test.r0")
+        open(crl_path, "wb").close()
+        with patch("subprocess.run", side_effect=RuntimeError("kaboom")):
+            with pytest.raises(IOError, match="Failed to parse CRL"):
+                _parse_crl_file(crl_path)
+
+
+# ---------------------------------------------------------------------------
+# _parse_crl_date — ValueError branch
+# ---------------------------------------------------------------------------
+
+class TestParseCrlDateValueError:
+    def test_returns_none_when_strptime_fails(self):
+        """A date-like string that passes the regex but fails strptime → None."""
+        # "QQQ" is a valid \w+ match but not a valid month abbreviation
+        text = "        Last Update: QQQ 99 00:00:00 2025 GMT\n"
+        result = _parse_crl_date(text, "Last Update:")
+        assert result is None
