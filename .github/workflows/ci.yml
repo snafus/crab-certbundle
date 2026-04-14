@@ -45,10 +45,14 @@ jobs:
           openssl version
           python3 -m pip list
 
-      - name: Run tests
+      - name: Run unit tests
         run: |
-          python3 -m pytest tests/ -v --tb=short \
+          python3 -m pytest tests/ --ignore=tests/integration -v --tb=short \
             --cov=crab --cov-report=term-missing
+
+      - name: Run integration tests
+        run: |
+          python3 -m pytest tests/integration/ -v --tb=short
 
   # ── Rocky Linux 9 — system Python 3.9 + latest (3.12) ────────────────────
   rocky9:
@@ -116,10 +120,14 @@ jobs:
           openssl version
           ${{ steps.py.outputs.pip }} list
 
-      - name: Run tests
+      - name: Run unit tests
         run: |
-          ${{ steps.py.outputs.bin }} -m pytest tests/ -v --tb=short \
+          ${{ steps.py.outputs.bin }} -m pytest tests/ --ignore=tests/integration -v --tb=short \
             --cov=crab --cov-report=term-missing
+
+      - name: Run integration tests
+        run: |
+          ${{ steps.py.outputs.bin }} -m pytest tests/integration/ -v --tb=short
 
   # ── Docker build validation (no push) ────────────────────────────────────
   docker:
