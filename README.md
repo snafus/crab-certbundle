@@ -196,6 +196,24 @@ crabctl fetch-crls --dry-run
 
 See `examples/config-full.yaml` for a fully annotated reference configuration.
 
+A JSON Schema is bundled at `crab/schema/crab.yaml.json` and enables
+editor autocompletion and inline validation in VS Code (with the
+[YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml))
+and any editor that supports `yaml-language-server`. Add this comment to
+the top of your config file to activate it:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ska-telescope/ska-src-cert-bundle/main/crab/schema/crab.yaml.json
+version: 1
+…
+```
+
+Or point directly at your installed copy:
+
+```yaml
+# yaml-language-server: $schema=/path/to/site-packages/crab/schema/crab.yaml.json
+```
+
 Key concepts:
 
 **Sources** define where certificates come from:

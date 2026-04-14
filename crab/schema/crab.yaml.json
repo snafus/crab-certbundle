@@ -1,0 +1,377 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/ska-telescope/ska-src-cert-bundle/crab/schema/crab.yaml.json",
+  "title": "crab configuration",
+  "description": "Schema for crab.yaml — the CRAB (Certificate Root Anchor Builder) configuration file.",
+  "type": "object",
+  "required": ["sources", "profiles"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "enum": [1],
+      "default": 1,
+      "description": "Config file format version. Currently only 1 is supported."
+    },
+    "sources": {
+      "type": "object",
+      "description": "Named certificate sources. Each key is the source name used in profile 'sources' lists.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/definitions/source"
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "description": "Output profiles. Each key is the profile name passed to 'crabctl build'.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/definitions/profile"
+      }
+    },
+    "logging": {
+      "$ref": "#/definitions/logging_config"
+    },
+    "refresh": {
+      "$ref": "#/definitions/refresh_config"
+    }
+  },
+  "definitions": {
+    "source": {
+      "type": "object",
+      "description": "A certificate source definition.",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["igtf", "local", "system"],
+          "description": "Source type: 'igtf' for IGTF bundles, 'local' for local files/directories, 'system' for OS trust store."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "igtf" } } },
+          "then": { "$ref": "#/definitions/source_igtf" }
+        },
+        {
+          "if": { "properties": { "type": { "const": "local" } } },
+          "then": { "$ref": "#/definitions/source_local" }
+        },
+        {
+          "if": { "properties": { "type": { "const": "system" } } },
+          "then": { "$ref": "#/definitions/source_system" }
+        }
+      ]
+    },
+    "source_igtf": {
+      "description": "IGTF source: load trust anchors from a local directory, tarball, or HTTPS URL.",
+      "properties": {
+        "type": { "type": "string", "const": "igtf" },
+        "path": {
+          "type": "string",
+          "description": "Path to an existing IGTF certificates directory (e.g. /etc/grid-security/certificates)."
+        },
+        "tarball": {
+          "type": "string",
+          "description": "Path to a local IGTF preinstalled-bundle .tar.gz file."
+        },
+        "url": {
+          "type": "string",
+          "description": "HTTPS URL of an IGTF preinstalled-bundle .tar.gz file. Supports ${VAR} interpolation."
+        },
+        "cache_dir": {
+          "type": "string",
+          "description": "Directory for caching downloaded tarballs. Supports ${VAR:-default} interpolation.",
+          "default": "/var/cache/crab"
+        },
+        "policies": {
+          "type": "array",
+          "description": "IGTF policy tags to include. Omit to accept all.",
+          "items": {
+            "type": "string",
+            "enum": ["classic", "iota", "mics", "slcs"]
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_local": {
+      "description": "Local source: load PEM certificates from a file, directory, or glob pattern.",
+      "required": ["path"],
+      "properties": {
+        "type": { "type": "string", "const": "local" },
+        "path": {
+          "type": "string",
+          "description": "Path to a PEM file, a PEM bundle, or a directory of certificates."
+        },
+        "pattern": {
+          "description": "Glob pattern(s) for files within a directory source.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          ],
+          "default": "*.pem"
+        },
+        "recursive": {
+          "type": "boolean",
+          "description": "Recurse into subdirectories when path is a directory.",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_system": {
+      "description": "System source: auto-detect the OS CA trust bundle.",
+      "properties": {
+        "type": { "type": "string", "const": "system" },
+        "path": {
+          "type": "string",
+          "description": "Override the auto-detected bundle path. Omit to use platform auto-detection."
+        }
+      },
+      "additionalProperties": false
+    },
+    "profile": {
+      "type": "object",
+      "description": "An output profile: a named combination of sources, policy, and output settings.",
+      "required": ["sources", "output_path"],
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable description shown in 'crabctl show-config'."
+        },
+        "sources": {
+          "type": "array",
+          "description": "List of source names (defined in the top-level 'sources' block) to include.",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "output_path": {
+          "type": "string",
+          "description": "Destination directory (capath/bundle) or file path (pkcs12)."
+        },
+        "staging_path": {
+          "type": "string",
+          "description": "Temporary staging directory for atomic builds. Defaults to output_path + '.staging'."
+        },
+        "atomic": {
+          "type": "boolean",
+          "description": "Write to a staging directory then atomically rename into place.",
+          "default": true
+        },
+        "output_format": {
+          "type": "string",
+          "enum": ["capath", "bundle", "pkcs12"],
+          "description": "Output format: OpenSSL CApath directory, concatenated PEM bundle, or PKCS#12 file.",
+          "default": "capath"
+        },
+        "pkcs12_password": {
+          "type": "string",
+          "description": "Passphrase for PKCS#12 output. Empty string = no encryption. Supports ${VAR} interpolation."
+        },
+        "rehash": {
+          "type": "string",
+          "enum": ["auto", "openssl", "builtin"],
+          "description": "Subject-hash computation mode: 'auto' tries openssl then builtin.",
+          "default": "auto"
+        },
+        "annotate_bundle": {
+          "type": "boolean",
+          "description": "Add subject/fingerprint comments to each PEM block in bundle output.",
+          "default": true
+        },
+        "write_symlinks": {
+          "type": "boolean",
+          "description": "Write subject-name symlinks (.0, .1 …) alongside hashed certificate files.",
+          "default": true
+        },
+        "include_igtf_meta": {
+          "type": "boolean",
+          "description": "Copy IGTF .info, .signing_policy, .namespaces, and .crl_url sidecar files to the output.",
+          "default": true
+        },
+        "include_crls": {
+          "type": "boolean",
+          "description": "Fetch and store CRL files alongside the certificate files.",
+          "default": false
+        },
+        "file_mode": {
+          "description": "Octal permission mode for written files. Accepts bare integers (420) or octal strings (\"0o644\").",
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 511 },
+            { "type": "string", "pattern": "^0[oO]?[0-7]{3}$" }
+          ],
+          "default": "0o644"
+        },
+        "dir_mode": {
+          "description": "Octal permission mode for created directories.",
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 511 },
+            { "type": "string", "pattern": "^0[oO]?[0-7]{3}$" }
+          ],
+          "default": "0o755"
+        },
+        "policy": {
+          "$ref": "#/definitions/policy"
+        },
+        "crl": {
+          "$ref": "#/definitions/crl_config"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "description": "Certificate selection policy for this profile.",
+      "additionalProperties": false,
+      "properties": {
+        "reject_expired": {
+          "type": "boolean",
+          "description": "Exclude certificates whose notAfter is in the past.",
+          "default": true
+        },
+        "reject_not_yet_valid": {
+          "type": "boolean",
+          "description": "Exclude certificates whose notBefore is in the future.",
+          "default": false
+        },
+        "require_ca_flag": {
+          "type": "boolean",
+          "description": "Exclude certificates that lack BasicConstraints CA=TRUE.",
+          "default": true
+        },
+        "reject_path_len_zero": {
+          "type": "boolean",
+          "description": "Exclude intermediate CAs with pathLen=0 (cannot sign further CAs).",
+          "default": false
+        },
+        "server_auth_only": {
+          "type": "boolean",
+          "description": "Only include certificates that have the serverAuth Extended Key Usage.",
+          "default": false
+        },
+        "client_auth_only": {
+          "type": "boolean",
+          "description": "Only include certificates that have the clientAuth Extended Key Usage.",
+          "default": false
+        },
+        "include": {
+          "type": "array",
+          "description": "Explicit include rules. If non-empty, a certificate must match at least one rule.",
+          "items": { "$ref": "#/definitions/policy_rule" }
+        },
+        "exclude": {
+          "type": "array",
+          "description": "Explicit exclude rules. A certificate matching any rule is dropped.",
+          "items": { "$ref": "#/definitions/policy_rule" }
+        }
+      }
+    },
+    "policy_rule": {
+      "type": "object",
+      "description": "A single policy match rule. Multiple keys within one rule are ANDed together.",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "subject_regex": {
+          "type": "string",
+          "description": "Case-insensitive regex matched against the certificate subject DN string."
+        },
+        "fingerprint_sha256": {
+          "type": "string",
+          "description": "Exact SHA-256 fingerprint (colon-delimited hex, e.g. 'AA:BB:CC:...')."
+        },
+        "fingerprint_sha1": {
+          "type": "string",
+          "description": "Exact SHA-1 fingerprint (colon-delimited hex)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Exact source name. Matches certificates loaded from that source."
+        },
+        "igtf_policy": {
+          "type": "string",
+          "enum": ["classic", "iota", "mics", "slcs"],
+          "description": "IGTF policy tag from the .info sidecar file."
+        }
+      }
+    },
+    "crl_config": {
+      "type": "object",
+      "description": "CRL fetch and freshness settings (active when include_crls: true).",
+      "additionalProperties": false,
+      "properties": {
+        "fetch": {
+          "type": "boolean",
+          "description": "Fetch missing or stale CRLs during a build.",
+          "default": true
+        },
+        "crl_path": {
+          "type": "string",
+          "description": "Directory to write CRL files. Defaults to the profile output_path."
+        },
+        "max_age_hours": {
+          "type": "number",
+          "description": "Maximum age in hours before a CRL is considered stale.",
+          "minimum": 0,
+          "default": 24
+        },
+        "verify_tls": {
+          "type": "boolean",
+          "description": "Verify TLS certificates when fetching CRLs over HTTPS.",
+          "default": true
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "description": "HTTP timeout in seconds for CRL fetch requests.",
+          "minimum": 1,
+          "default": 30
+        },
+        "sources": {
+          "type": "array",
+          "description": "Where to look for CRL distribution point URLs.",
+          "items": {
+            "type": "string",
+            "enum": ["distribution", "igtf"]
+          },
+          "uniqueItems": true,
+          "default": ["distribution", "igtf"]
+        }
+      }
+    },
+    "logging_config": {
+      "type": "object",
+      "description": "Logging configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+          "description": "Minimum log level written to stderr.",
+          "default": "INFO"
+        },
+        "file": {
+          "type": "string",
+          "description": "Optional path to a log file. Log messages are written here in addition to stderr."
+        }
+      }
+    },
+    "refresh_config": {
+      "type": "object",
+      "description": "Scheduling hints used by the bundled systemd timer and cron examples.",
+      "additionalProperties": false,
+      "properties": {
+        "schedule": {
+          "type": "string",
+          "description": "Cron expression for scheduled refresh (informational; not executed by crab itself)."
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Maximum expected run time in seconds before the build is considered stuck.",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

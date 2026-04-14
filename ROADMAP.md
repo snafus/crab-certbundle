@@ -102,8 +102,8 @@ Changes after this point must be backwards-compatible or version-bumped.*
 
 - 🔲 PyPI release (`crabctl` package name)
 - 🔲 Debian/Ubuntu `.deb` package (for Ubuntu 22.04 LTS)
-- 🔲 JSON Schema for `crab.yaml` (machine-readable validation, editor
-  auto-complete) — blocked on config audit above
+- ✅ JSON Schema for `crab.yaml` (machine-readable validation, editor
+  auto-complete via `yaml-language-server`)
 - 🔲 `crab --version` reports commit SHA when installed from source
 - 🔲 Tox matrix extended to Python 3.13
 - 🔲 `CONTRIBUTING.md`
