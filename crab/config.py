@@ -144,6 +144,31 @@ class ConfigError(Exception):
     pass
 
 
+def _parse_file_mode(value, profile_name, key):
+    # type: (Any, str, str) -> int
+    """
+    Parse a YAML file-mode value to an integer.
+
+    Accepts bare integers (``0o644`` written as ``420`` in YAML, or loaded
+    from a Python literal) and octal-string notation (``"0o644"``).
+    YAML does not recognise the ``0o`` prefix as octal; users who write
+    ``file_mode: "0o644"`` in their config get the expected result.
+
+    Raises :exc:`ConfigError` on unrecognisable values.
+    """
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 0)  # handles "0o644", "0644", "420"
+        except ValueError:
+            pass
+    raise ConfigError(
+        "Profile '{}': '{}' must be an integer or octal string like "
+        "\"0o644\"; got {!r}".format(profile_name, key, value)
+    )
+
+
 class SourceConfig:
     """Parsed configuration for a single named source."""
 
@@ -221,12 +246,13 @@ class ProfileConfig:
         if self.output_format == "capath" and self.atomic:
             _check_staging_device(self.output_path, self.staging_path, name)
 
+        self.description = raw.get("description", "")
         self.annotate_bundle = bool(raw.get("annotate_bundle", True))
         self.write_symlinks = bool(raw.get("write_symlinks", True))
         self.include_igtf_meta = bool(raw.get("include_igtf_meta", True))
         self.include_crls = bool(raw.get("include_crls", False))
-        self.file_mode = raw.get("file_mode", 0o644)
-        self.dir_mode = raw.get("dir_mode", 0o755)
+        self.file_mode = _parse_file_mode(raw.get("file_mode", 0o644), name, "file_mode")
+        self.dir_mode = _parse_file_mode(raw.get("dir_mode", 0o755), name, "dir_mode")
 
         self.policy = raw.get("policy", {})
         self.crl = raw.get("crl", {})
@@ -251,8 +277,8 @@ class ProfileConfig:
         }
 
     def __repr__(self):
-        return "ProfileConfig(name={!r}, output={!r})".format(
-            self.name, self.output_path
+        return "ProfileConfig(name={!r}, output={!r}, description={!r})".format(
+            self.name, self.output_path, self.description
         )
 
 

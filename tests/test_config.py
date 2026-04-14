@@ -541,3 +541,95 @@ class TestPkcs12Config:
         d = cfg.profiles["p"].as_output_profile_dict()
         assert d["output_format"] == "pkcs12"
         assert d["pkcs12_password"] == "s3cr3t"
+
+
+# ---------------------------------------------------------------------------
+# file_mode / dir_mode parsing
+# ---------------------------------------------------------------------------
+
+class TestFileModeparsing:
+    """ProfileConfig correctly parses file_mode and dir_mode values."""
+
+    def _cfg(self, tmp_path, pem_dir, file_mode_line="", dir_mode_line=""):
+        cfg_path = str(tmp_path / "crab.yaml")
+        with open(cfg_path, "w") as f:
+            f.write(
+                "version: 1\n"
+                "sources:\n"
+                "  s:\n"
+                "    type: local\n"
+                "    path: {pem_dir}\n"
+                "profiles:\n"
+                "  p:\n"
+                "    sources: [s]\n"
+                "    output_path: {out}\n"
+                "{file_mode}"
+                "{dir_mode}".format(
+                    pem_dir=pem_dir,
+                    out=str(tmp_path / "out"),
+                    file_mode=file_mode_line,
+                    dir_mode=dir_mode_line,
+                )
+            )
+        return load_config(cfg_path)
+
+    def test_default_file_mode_is_0o644(self, tmp_path, pem_dir):
+        cfg = self._cfg(tmp_path, pem_dir)
+        assert cfg.profiles["p"].file_mode == 0o644
+
+    def test_integer_file_mode(self, tmp_path, pem_dir):
+        cfg = self._cfg(tmp_path, pem_dir, "    file_mode: 420\n")  # 420 == 0o644
+        assert cfg.profiles["p"].file_mode == 0o644
+
+    def test_octal_string_file_mode(self, tmp_path, pem_dir):
+        cfg = self._cfg(tmp_path, pem_dir, '    file_mode: "0o644"\n')
+        assert cfg.profiles["p"].file_mode == 0o644
+
+    def test_octal_string_dir_mode(self, tmp_path, pem_dir):
+        cfg = self._cfg(tmp_path, pem_dir, dir_mode_line='    dir_mode: "0o755"\n')
+        assert cfg.profiles["p"].dir_mode == 0o755
+
+    def test_invalid_mode_raises(self, tmp_path, pem_dir):
+        with pytest.raises(ConfigError, match="file_mode"):
+            self._cfg(tmp_path, pem_dir, '    file_mode: "rwxr-xr-x"\n')
+
+
+# ---------------------------------------------------------------------------
+# description key
+# ---------------------------------------------------------------------------
+
+class TestProfileDescription:
+    """ProfileConfig reads and stores the optional description key."""
+
+    def _cfg(self, tmp_path, pem_dir, description_line=""):
+        cfg_path = str(tmp_path / "crab.yaml")
+        with open(cfg_path, "w") as f:
+            f.write(
+                "version: 1\n"
+                "sources:\n"
+                "  s:\n"
+                "    type: local\n"
+                "    path: {pem_dir}\n"
+                "profiles:\n"
+                "  p:\n"
+                "    sources: [s]\n"
+                "    output_path: {out}\n"
+                "{desc}".format(
+                    pem_dir=pem_dir,
+                    out=str(tmp_path / "out"),
+                    desc=description_line,
+                )
+            )
+        return load_config(cfg_path)
+
+    def test_description_defaults_to_empty_string(self, tmp_path, pem_dir):
+        cfg = self._cfg(tmp_path, pem_dir)
+        assert cfg.profiles["p"].description == ""
+
+    def test_description_stored(self, tmp_path, pem_dir):
+        cfg = self._cfg(tmp_path, pem_dir, '    description: "My test profile"\n')
+        assert cfg.profiles["p"].description == "My test profile"
+
+    def test_repr_includes_description(self, tmp_path, pem_dir):
+        cfg = self._cfg(tmp_path, pem_dir, '    description: "grid certs"\n')
+        assert "grid certs" in repr(cfg.profiles["p"])

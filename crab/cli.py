@@ -357,8 +357,9 @@ def diff(ctx, profile_or_dir, old_dir, output_json):
         click.echo(render_diff_text(d))
         if not d.has_changes:
             click.echo("No changes.")
-        else:
-            sys.exit(1)  # non-zero when changes exist, useful in scripts
+
+    if d.has_changes:
+        sys.exit(1)  # non-zero when changes exist, useful in scripts
 
 
 def _load_profile_certs(cfg, profile_name):
@@ -568,10 +569,11 @@ def show_config(ctx):
     click.echo("Profiles ({})".format(len(cfg.profiles)))
     click.echo("-" * 40)
     for name, prof in cfg.profiles.items():
-        click.echo("  {:<20}  → {}".format(name, prof.output_path))
+        desc = "  ({})".format(prof.description) if prof.description else ""
+        click.echo("  {:<20}  → {}{}".format(name, prof.output_path, desc))
         click.echo("    sources: {}".format(", ".join(prof.sources)))
-        click.echo("    atomic: {}  rehash: {}  crls: {}".format(
-            prof.atomic, prof.rehash, prof.include_crls
+        click.echo("    format: {}  atomic: {}  rehash: {}  crls: {}".format(
+            prof.output_format, prof.atomic, prof.rehash, prof.include_crls
         ))
 
 
@@ -589,8 +591,8 @@ def _load_certs_from_directory(directory, source_name):
         full = os.path.join(directory, entry)
         try:
             certs.extend(parse_pem_file(full, source_name=source_name))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Could not parse cert file %s: %s", full, exc)
     return certs
 
 

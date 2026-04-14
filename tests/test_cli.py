@@ -1160,3 +1160,43 @@ class TestFindDefaultConfig:
             result = runner.invoke(main, ["show-config"])
             # Should auto-detect ./crab.yaml and load without --config
             assert result.exit_code == 0
+
+
+class TestDiffJsonExitCode:
+    """diff --json exits 1 when changes are detected (same contract as text mode)."""
+
+    def test_diff_json_exits_1_when_changes(self, runner, cli_env, tmp_path):
+        """diff --json with an empty comparison dir exits 1 (changes present)."""
+        empty_dir = str(tmp_path / "empty")
+        os.makedirs(empty_dir)
+        result = runner.invoke(
+            main,
+            ["--config", cli_env["config"], "diff", "--json",
+             "--old-dir", empty_dir, "default"],
+        )
+        import json as _json
+        data = _json.loads(result.output)
+        assert data["summary"]["added"] > 0
+        assert result.exit_code == 1
+
+    def test_diff_json_exits_0_when_no_changes(self, runner, cli_env, tmp_path, ca_pem, second_ca_pem):
+        """diff --json exits 0 when output matches what would be built."""
+        from crab.rehash import build_symlink_map
+        from crab.cert import parse_pem_data
+        # Build an output dir identical to what build would produce
+        out = str(tmp_path / "out")
+        os.makedirs(out)
+        certs = parse_pem_data(ca_pem + b"\n" + second_ca_pem)
+        hash_map = build_symlink_map(certs)
+        for fname, pem in hash_map.items():
+            open(os.path.join(out, fname), "wb").write(pem)
+        result = runner.invoke(
+            main,
+            ["--config", cli_env["config"], "diff", "--json", "--old-dir", out,
+             "default"],
+        )
+        import json as _json
+        data = _json.loads(result.output)
+        assert data["summary"]["added"] == 0
+        assert data["summary"]["removed"] == 0
+        assert result.exit_code == 0
