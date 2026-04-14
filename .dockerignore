@@ -1,0 +1,32 @@
+# Keep the build context small — only what pip install needs lands in the image.
+# The production Dockerfile (docker/Dockerfile) copies:
+#   setup.cfg  setup.py  pyproject.toml  certbundle/  docker/entrypoint.sh
+
+# Version control
+.git
+.gitignore
+
+# Test artefacts
+tests/
+.pytest_cache/
+*.egg-info/
+htmlcov/
+.coverage
+.tox/
+
+# Development tooling (test Dockerfile at repo root is not used by the production build)
+Dockerfile
+tox.ini
+
+# Docs and examples
+docs/
+examples/
+*.md
+LICENSE
+
+# Editor / OS noise
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+*.pyo
