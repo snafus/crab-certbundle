@@ -61,7 +61,7 @@ Core trust-directory pipeline, complete and tested.
 computing environments.*
 
 - 🔲 Add `crab` as an alias entry point alongside `crabctl`
-- 🔲 PyPI release (`crab` package name)
+- 🔲 PyPI release (`crabctl` package name)
 - 🔲 RPM spec file for Rocky/RHEL 8 and 9 (COPR or direct)
 - 🔲 Debian/Ubuntu `.deb` package (for Ubuntu 22.04 LTS)
 - 🔲 JSON Schema for `crab.yaml` config (machine-readable validation, editor
