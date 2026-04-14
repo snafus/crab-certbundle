@@ -668,3 +668,7 @@ def _find_default_config():
         if os.path.isfile(path):
             return path
     return None
+
+
+if __name__ == "__main__":
+    main()
