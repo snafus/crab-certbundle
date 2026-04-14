@@ -30,6 +30,7 @@ import os
 import platform as _platform
 import shutil
 import stat
+import tempfile
 from typing import Dict, List, Optional
 
 from certbundle.cert import CertificateInfo
@@ -67,6 +68,14 @@ class OutputProfile:
             "staging_path", self.output_path + ".staging"
         )
         self.atomic = bool(profile_config.get("atomic", True))
+        output_format = profile_config.get("output_format", "capath")
+        if output_format not in ("capath", "bundle"):
+            raise ValueError(
+                "Unknown output_format {!r}; must be 'capath' or 'bundle'".format(
+                    output_format
+                )
+            )
+        self.output_format = output_format
         self.rehash_mode = profile_config.get("rehash", "auto")
         self.write_symlinks = bool(profile_config.get("write_symlinks", True))
         self.include_igtf_meta = bool(profile_config.get("include_igtf_meta", True))
@@ -86,6 +95,9 @@ def build_output(
 
     Returns a :class:`BuildResult` describing what was written.
     """
+    if profile.output_format == "bundle":
+        return _build_bundle(cert_infos, profile, dry_run=dry_run)
+
     result = BuildResult(profile.name, profile.output_path)
 
     work_dir = profile.staging_path if profile.atomic else profile.output_path
@@ -136,6 +148,81 @@ def build_output(
             profile.name, result.cert_count, profile.output_path,
         )
 
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Bundle (single-file) output
+# ---------------------------------------------------------------------------
+
+def _build_bundle(cert_infos, profile, dry_run=False):
+    # type: (List[CertificateInfo], OutputProfile, bool) -> BuildResult
+    """
+    Write all *cert_infos* as a single concatenated PEM file to
+    ``profile.output_path``, replacing any existing file atomically.
+    """
+    result = BuildResult(profile.name, profile.output_path)
+
+    # Deduplicate by fingerprint; sort for deterministic output
+    seen = set()   # type: set
+    ordered = []
+    for ci in sorted(cert_infos, key=lambda c: c.fingerprint_sha256 or ""):
+        fp = ci.fingerprint_sha256
+        if fp in seen:
+            continue
+        seen.add(fp)
+        ordered.append(ci)
+
+    result.cert_count = len(ordered)
+
+    if dry_run:
+        logger.info(
+            "[dry-run] Would write bundle of %d certs to %s",
+            result.cert_count, profile.output_path,
+        )
+        return result
+
+    # Concatenate PEM blocks, ensuring each ends with a newline
+    parts = []
+    for ci in ordered:
+        parts.append(ci.pem_data)
+        if not ci.pem_data.endswith(b"\n"):
+            parts.append(b"\n")
+    bundle_data = b"".join(parts)
+
+    # Ensure parent directory exists
+    parent = os.path.dirname(os.path.abspath(profile.output_path))
+    if not os.path.isdir(parent):
+        os.makedirs(parent, profile.dir_mode)
+
+    # Guard: refuse to overwrite a directory with a file
+    if os.path.isdir(profile.output_path):
+        raise ValueError(
+            "output_path {!r} is a directory; cannot write bundle file there. "
+            "Remove the directory or choose a different path.".format(
+                profile.output_path
+            )
+        )
+
+    # Atomic write via temp file in same directory (guarantees same filesystem)
+    fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(bundle_data)
+        os.chmod(tmp, profile.file_mode)
+        os.replace(tmp, profile.output_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    result.files_written.append(os.path.basename(profile.output_path))
+    logger.info(
+        "Built bundle profile '%s': %d certs → %s",
+        profile.name, result.cert_count, profile.output_path,
+    )
     return result
 
 

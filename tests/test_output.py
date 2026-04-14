@@ -8,7 +8,7 @@ import pytest
 from certbundle.cert import parse_pem_data
 from certbundle.output import (
     OutputProfile, build_output, BuildResult,
-    _atomic_swap, _try_renameat2_exchange,
+    _atomic_swap, _try_renameat2_exchange, _build_bundle,
 )
 
 
@@ -180,3 +180,119 @@ class TestRenameat2:
         b.mkdir()
         result = _try_renameat2_exchange(str(a), str(b))
         assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# Bundle output
+# ---------------------------------------------------------------------------
+
+def _make_bundle_profile(tmp_path, name="bundle-test", **extra):
+    output_path = str(tmp_path / (name + ".pem"))
+    cfg = {
+        "output_path": output_path,
+        "output_format": "bundle",
+    }
+    cfg.update(extra)
+    return OutputProfile(name, cfg)
+
+
+class TestBuildBundle:
+    def test_writes_single_file(self, tmp_path, ca_pem):
+        certs = parse_pem_data(ca_pem)
+        profile = _make_bundle_profile(tmp_path)
+        build_output(certs, profile)
+        assert os.path.isfile(profile.output_path)
+        assert not os.path.isdir(profile.output_path)
+
+    def test_file_contains_pem_block(self, tmp_path, ca_pem):
+        certs = parse_pem_data(ca_pem)
+        profile = _make_bundle_profile(tmp_path)
+        build_output(certs, profile)
+        data = open(profile.output_path, "rb").read()
+        assert b"-----BEGIN CERTIFICATE-----" in data
+        assert b"-----END CERTIFICATE-----" in data
+
+    def test_two_certs_both_present(self, tmp_path, ca_pem, second_ca_pem):
+        certs = parse_pem_data(ca_pem) + parse_pem_data(second_ca_pem)
+        profile = _make_bundle_profile(tmp_path)
+        build_output(certs, profile)
+        data = open(profile.output_path, "rb").read()
+        assert data.count(b"-----BEGIN CERTIFICATE-----") == 2
+
+    def test_deduplicates_certs(self, tmp_path, ca_pem):
+        certs = parse_pem_data(ca_pem) + parse_pem_data(ca_pem)
+        profile = _make_bundle_profile(tmp_path)
+        result = build_output(certs, profile)
+        assert result.cert_count == 1
+        data = open(profile.output_path, "rb").read()
+        assert data.count(b"-----BEGIN CERTIFICATE-----") == 1
+
+    def test_cert_count_in_result(self, tmp_path, ca_pem, second_ca_pem):
+        certs = parse_pem_data(ca_pem) + parse_pem_data(second_ca_pem)
+        profile = _make_bundle_profile(tmp_path)
+        result = build_output(certs, profile)
+        assert result.cert_count == 2
+
+    def test_deterministic_order(self, tmp_path, ca_pem, second_ca_pem):
+        """Output order is fingerprint-sorted, not input-order-dependent."""
+        certs_ab = parse_pem_data(ca_pem) + parse_pem_data(second_ca_pem)
+        certs_ba = parse_pem_data(second_ca_pem) + parse_pem_data(ca_pem)
+        p1 = _make_bundle_profile(tmp_path, name="p1")
+        p2 = _make_bundle_profile(tmp_path, name="p2")
+        build_output(certs_ab, p1)
+        build_output(certs_ba, p2)
+        assert open(p1.output_path, "rb").read() == open(p2.output_path, "rb").read()
+
+    def test_atomically_replaces_existing_file(self, tmp_path, ca_pem, second_ca_pem):
+        """A second build replaces the existing bundle without leaving a gap."""
+        profile = _make_bundle_profile(tmp_path)
+        build_output(parse_pem_data(ca_pem), profile)
+        first_data = open(profile.output_path, "rb").read()
+
+        build_output(parse_pem_data(second_ca_pem), profile)
+        second_data = open(profile.output_path, "rb").read()
+
+        assert first_data != second_data
+        assert b"-----BEGIN CERTIFICATE-----" in second_data
+
+    def test_no_temp_file_left_on_success(self, tmp_path, ca_pem):
+        profile = _make_bundle_profile(tmp_path)
+        build_output(parse_pem_data(ca_pem), profile)
+        tmp_files = [f for f in os.listdir(str(tmp_path)) if f.endswith(".tmp")]
+        assert tmp_files == []
+
+    def test_dry_run_does_not_write(self, tmp_path, ca_pem):
+        profile = _make_bundle_profile(tmp_path)
+        result = build_output(parse_pem_data(ca_pem), profile, dry_run=True)
+        assert not os.path.exists(profile.output_path)
+        assert result.cert_count == 1
+
+    def test_file_permissions(self, tmp_path, ca_pem):
+        profile = _make_bundle_profile(tmp_path, file_mode=0o640)
+        build_output(parse_pem_data(ca_pem), profile)
+        mode = oct(os.stat(profile.output_path).st_mode & 0o777)
+        assert mode == oct(0o640)
+
+    def test_creates_parent_directory(self, tmp_path, ca_pem):
+        output_path = str(tmp_path / "new" / "subdir" / "bundle.pem")
+        profile = OutputProfile("p", {"output_path": output_path, "output_format": "bundle"})
+        build_output(parse_pem_data(ca_pem), profile)
+        assert os.path.isfile(output_path)
+
+    def test_raises_if_output_path_is_directory(self, tmp_path, ca_pem):
+        out_dir = tmp_path / "mydir"
+        out_dir.mkdir()
+        profile = OutputProfile("p", {"output_path": str(out_dir), "output_format": "bundle"})
+        with pytest.raises(ValueError, match="directory"):
+            build_output(parse_pem_data(ca_pem), profile)
+
+    def test_empty_cert_list_writes_empty_file(self, tmp_path):
+        profile = _make_bundle_profile(tmp_path)
+        result = build_output([], profile)
+        assert os.path.isfile(profile.output_path)
+        assert open(profile.output_path, "rb").read() == b""
+        assert result.cert_count == 0
+
+    def test_invalid_output_format_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="output_format"):
+            OutputProfile("p", {"output_path": str(tmp_path / "f.pem"), "output_format": "tarball"})

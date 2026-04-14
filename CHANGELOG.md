@@ -27,6 +27,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `cache_ttl_days` and `cache_pinned` parameters.
 - `_evict_stale_cache` helper function to clean up superseded `.tar.gz` /
   `.meta` file pairs from the cache directory.
+- `output_format: bundle` profile option — writes all accepted certificates
+  as a single concatenated PEM file instead of an OpenSSL CApath directory.
+  The bundle is sorted by fingerprint for deterministic output, deduplicated,
+  and written atomically via `tempfile.mkstemp()` + `os.replace()`, replacing
+  any existing file without a window where the path is absent.
+  `output_format: capath` remains the default and is fully unchanged.
 
 ---
 

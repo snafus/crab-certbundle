@@ -94,9 +94,6 @@ class ProfileConfig:
         self.staging_path = raw.get("staging_path", self.output_path + ".staging")
         self.atomic = bool(raw.get("atomic", True))
 
-        if self.atomic:
-            _check_staging_device(self.output_path, self.staging_path, name)
-
         self.sources = raw.get("sources", [])
         if not self.sources:
             raise ConfigError(
@@ -109,6 +106,15 @@ class ProfileConfig:
                     "Known sources: {}".format(name, s, ", ".join(known_source_names))
                 )
 
+        output_format = raw.get("output_format", "capath")
+        if output_format not in ("capath", "bundle"):
+            raise ConfigError(
+                "Profile '{}': unknown output_format '{}'. Must be 'capath' or 'bundle'".format(
+                    name, output_format
+                )
+            )
+        self.output_format = output_format
+
         rehash = raw.get("rehash", "auto")
         if rehash not in SUPPORTED_REHASH_MODES:
             raise ConfigError(
@@ -117,6 +123,10 @@ class ProfileConfig:
                 )
             )
         self.rehash = rehash
+
+        # staging_path / device check only applies to capath output
+        if self.output_format == "capath" and self.atomic:
+            _check_staging_device(self.output_path, self.staging_path, name)
 
         self.write_symlinks = bool(raw.get("write_symlinks", True))
         self.include_igtf_meta = bool(raw.get("include_igtf_meta", True))
@@ -136,6 +146,7 @@ class ProfileConfig:
             "output_path": self.output_path,
             "staging_path": self.staging_path,
             "atomic": self.atomic,
+            "output_format": self.output_format,
             "rehash": self.rehash,
             "write_symlinks": self.write_symlinks,
             "include_igtf_meta": self.include_igtf_meta,
