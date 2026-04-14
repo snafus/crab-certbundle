@@ -76,6 +76,7 @@ class OutputProfile:
                 )
             )
         self.output_format = output_format
+        self.annotate_bundle = bool(profile_config.get("annotate_bundle", True))
         self.rehash_mode = profile_config.get("rehash", "auto")
         self.write_symlinks = bool(profile_config.get("write_symlinks", True))
         self.include_igtf_meta = bool(profile_config.get("include_igtf_meta", True))
@@ -155,6 +156,28 @@ def build_output(
 # Bundle (single-file) output
 # ---------------------------------------------------------------------------
 
+def _cert_annotation(ci):
+    # type: (CertificateInfo) -> bytes
+    """
+    Return a block of ``#``-prefixed comment lines describing *ci*.
+
+    Written immediately before the PEM block in annotated bundles.
+    Comments in PEM files are ignored by OpenSSL, curl, Python ssl,
+    and all other consumers that follow RFC 7468 / OpenSSL conventions.
+    """
+    lines = []
+    lines.append("# Subject:  {}".format(ci.subject or "(unknown)"))
+    if ci.issuer and ci.issuer != ci.subject:
+        lines.append("# Issuer:   {}".format(ci.issuer))
+    if ci.not_after:
+        lines.append("# Expires:  {}".format(ci.not_after.strftime("%Y-%m-%d")))
+    if ci.source_name:
+        lines.append("# Source:   {}".format(ci.source_name))
+    if ci.igtf_info and ci.igtf_info.get("alias"):
+        lines.append("# Alias:    {}".format(ci.igtf_info["alias"]))
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
 def _build_bundle(cert_infos, profile, dry_run=False):
     # type: (List[CertificateInfo], OutputProfile, bool) -> BuildResult
     """
@@ -182,9 +205,11 @@ def _build_bundle(cert_infos, profile, dry_run=False):
         )
         return result
 
-    # Concatenate PEM blocks, ensuring each ends with a newline
+    # Concatenate PEM blocks, optionally preceded by human-readable annotations
     parts = []
     for ci in ordered:
+        if profile.annotate_bundle:
+            parts.append(_cert_annotation(ci))
         parts.append(ci.pem_data)
         if not ci.pem_data.endswith(b"\n"):
             parts.append(b"\n")

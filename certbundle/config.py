@@ -129,6 +129,7 @@ class ProfileConfig:
         if self.output_format == "capath" and self.atomic:
             _check_staging_device(self.output_path, self.staging_path, name)
 
+        self.annotate_bundle = bool(raw.get("annotate_bundle", True))
         self.write_symlinks = bool(raw.get("write_symlinks", True))
         self.include_igtf_meta = bool(raw.get("include_igtf_meta", True))
         self.include_crls = bool(raw.get("include_crls", False))
@@ -148,6 +149,7 @@ class ProfileConfig:
             "staging_path": self.staging_path,
             "atomic": self.atomic,
             "output_format": self.output_format,
+            "annotate_bundle": self.annotate_bundle,
             "rehash": self.rehash,
             "write_symlinks": self.write_symlinks,
             "include_igtf_meta": self.include_igtf_meta,

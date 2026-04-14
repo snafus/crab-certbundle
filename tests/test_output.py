@@ -8,7 +8,7 @@ import pytest
 from certbundle.cert import parse_pem_data
 from certbundle.output import (
     OutputProfile, build_output, BuildResult,
-    _atomic_swap, _try_renameat2_exchange, _build_bundle,
+    _atomic_swap, _try_renameat2_exchange, _build_bundle, _cert_annotation,
 )
 
 
@@ -296,3 +296,108 @@ class TestBuildBundle:
     def test_invalid_output_format_raises(self, tmp_path):
         with pytest.raises(ValueError, match="output_format"):
             OutputProfile("p", {"output_path": str(tmp_path / "f.pem"), "output_format": "tarball"})
+
+    # -- annotation behaviour -------------------------------------------------
+
+    def test_annotations_present_by_default(self, tmp_path, ca_pem):
+        profile = _make_bundle_profile(tmp_path)
+        build_output(parse_pem_data(ca_pem), profile)
+        data = open(profile.output_path, "rb").read()
+        assert b"# Subject:" in data
+
+    def test_annotations_disabled_by_flag(self, tmp_path, ca_pem):
+        profile = _make_bundle_profile(tmp_path, annotate_bundle=False)
+        build_output(parse_pem_data(ca_pem), profile)
+        data = open(profile.output_path, "rb").read()
+        assert b"#" not in data
+
+    def test_annotation_before_each_cert(self, tmp_path, ca_pem, second_ca_pem):
+        certs = parse_pem_data(ca_pem) + parse_pem_data(second_ca_pem)
+        profile = _make_bundle_profile(tmp_path)
+        build_output(certs, profile)
+        data = open(profile.output_path, "rb").read()
+        assert data.count(b"# Subject:") == 2
+
+    def test_annotation_contains_expiry(self, tmp_path, ca_pem):
+        profile = _make_bundle_profile(tmp_path)
+        build_output(parse_pem_data(ca_pem), profile)
+        data = open(profile.output_path, "rb").read()
+        assert b"# Expires:" in data
+
+    def test_annotation_contains_source(self, tmp_path, ca_pem):
+        profile = _make_bundle_profile(tmp_path)
+        certs = parse_pem_data(ca_pem, source_name="test-source")
+        build_output(certs, profile)
+        data = open(profile.output_path, "rb").read()
+        assert b"# Source:   test-source" in data
+
+    def test_issuer_line_omitted_for_self_signed(self, tmp_path, ca_pem):
+        """Root CAs are self-signed: Issuer == Subject, so the Issuer line is redundant."""
+        profile = _make_bundle_profile(tmp_path)
+        build_output(parse_pem_data(ca_pem), profile)
+        data = open(profile.output_path, "rb").read()
+        assert b"# Issuer:" not in data
+
+
+# ---------------------------------------------------------------------------
+# _cert_annotation unit tests
+# ---------------------------------------------------------------------------
+
+class TestCertAnnotation:
+    def _make_cert(self, ca_pem, **kwargs):
+        certs = parse_pem_data(ca_pem, **kwargs)
+        return certs[0]
+
+    def test_subject_line_always_present(self, ca_pem):
+        ci = self._make_cert(ca_pem)
+        ann = _cert_annotation(ci)
+        assert b"# Subject:" in ann
+
+    def test_expires_line_present(self, ca_pem):
+        ci = self._make_cert(ca_pem)
+        ann = _cert_annotation(ci)
+        assert b"# Expires:" in ann
+
+    def test_issuer_line_absent_for_self_signed(self, ca_pem):
+        ci = self._make_cert(ca_pem)
+        # Root CAs are self-signed
+        assert ci.subject == ci.issuer
+        ann = _cert_annotation(ci)
+        assert b"# Issuer:" not in ann
+
+    def test_source_line_present_when_set(self, ca_pem):
+        ci = self._make_cert(ca_pem, source_name="my-source")
+        ann = _cert_annotation(ci)
+        assert b"# Source:   my-source" in ann
+
+    def test_source_line_absent_when_not_set(self, ca_pem):
+        ci = self._make_cert(ca_pem)
+        ci.source_name = None
+        ann = _cert_annotation(ci)
+        assert b"# Source:" not in ann
+
+    def test_alias_line_present_when_igtf_info_has_alias(self, ca_pem):
+        ci = self._make_cert(ca_pem)
+        ci.igtf_info = {"alias": "TestCA-Root", "policy": "classic"}
+        ann = _cert_annotation(ci)
+        assert b"# Alias:    TestCA-Root" in ann
+
+    def test_alias_line_absent_without_igtf_info(self, ca_pem):
+        ci = self._make_cert(ca_pem)
+        ann = _cert_annotation(ci)
+        assert b"# Alias:" not in ann
+
+    def test_annotation_ends_with_newline(self, ca_pem):
+        ci = self._make_cert(ca_pem)
+        ann = _cert_annotation(ci)
+        assert ann.endswith(b"\n")
+
+    def test_expires_date_format(self, ca_pem):
+        """Date should be ISO YYYY-MM-DD, not a datetime with time component."""
+        ci = self._make_cert(ca_pem)
+        ann = _cert_annotation(ci).decode()
+        line = next(l for l in ann.splitlines() if "Expires" in l)
+        date_part = line.split("Expires:")[1].strip()
+        # Must match YYYY-MM-DD exactly
+        import re
+        assert re.match(r"^\d{4}-\d{2}-\d{2}$", date_part), repr(date_part)
