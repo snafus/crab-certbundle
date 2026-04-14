@@ -130,11 +130,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build production image (no push)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build production image — amd64 only, no push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
+          platforms: linux/amd64
           push: false
 
   # ── RPM builds (run after tests pass) ────────────────────────────────────
