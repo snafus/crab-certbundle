@@ -4,7 +4,7 @@
 
 ```bash
 # Install the unit files
-install -m 644 certbundle.service certbundle.timer /etc/systemd/system/
+install -m 644 crab.service crab.timer /etc/systemd/system/
 
 # Create required directories
 install -d -m 755 /etc/crab
@@ -17,24 +17,24 @@ install -m 640 /path/to/config.yaml /etc/crab/config.yaml
 
 # Reload systemd and enable the timer
 systemctl daemon-reload
-systemctl enable --now certbundle.timer
+systemctl enable --now crab.timer
 
 # Run once immediately to verify
-systemctl start certbundle.service
-journalctl -u certbundle.service -f
+systemctl start crab.service
+journalctl -u crab.service -f
 ```
 
 ## Status and logs
 
 ```bash
 # Check timer status
-systemctl status certbundle.timer
+systemctl status crab.timer
 
 # View last run logs
-journalctl -u certbundle.service --since "24 hours ago"
+journalctl -u crab.service --since "24 hours ago"
 
 # List all timers
-systemctl list-timers certbundle.timer
+systemctl list-timers crab.timer
 ```
 
 ## Cron alternative

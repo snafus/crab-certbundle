@@ -1,8 +1,8 @@
-# certbundle
+# crab
 
 **OpenSSL-style CA certificate directory builder for research infrastructure**
 
-`certbundle` generates and updates hashed CApath directories suitable for
+`crab` generates and updates hashed CApath directories suitable for
 XRootD, dCache clients, curl/OpenSSL consumers, and similar data-movement
 middleware used in research computing environments such as SRCNet, WLCG, and
 EGI.
@@ -236,9 +236,9 @@ profiles:
 ### systemd timer
 
 ```bash
-cp systemd/certbundle.service systemd/certbundle.timer /etc/systemd/system/
+cp systemd/crab.service systemd/crab.timer /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now certbundle.timer
+systemctl enable --now crab.timer
 ```
 
 ### cron
@@ -261,8 +261,8 @@ pytest -v
 pytest --cov=certbundle --cov-report=term-missing
 
 # In a Rocky 8 container
-docker build -t certbundle-test .
-docker run --rm certbundle-test pytest -v
+docker build -t crab-test .
+docker run --rm crab-test pytest -v
 ```
 
 ---
