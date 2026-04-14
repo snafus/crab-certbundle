@@ -69,13 +69,14 @@ class OutputProfile:
         )
         self.atomic = bool(profile_config.get("atomic", True))
         output_format = profile_config.get("output_format", "capath")
-        if output_format not in ("capath", "bundle"):
+        if output_format not in ("capath", "bundle", "pkcs12"):
             raise ValueError(
-                "Unknown output_format {!r}; must be 'capath' or 'bundle'".format(
+                "Unknown output_format {!r}; must be 'capath', 'bundle', or 'pkcs12'".format(
                     output_format
                 )
             )
         self.output_format = output_format
+        self.pkcs12_password = profile_config.get("pkcs12_password", "")
         self.annotate_bundle = bool(profile_config.get("annotate_bundle", True))
         self.rehash_mode = profile_config.get("rehash", "auto")
         self.write_symlinks = bool(profile_config.get("write_symlinks", True))
@@ -98,6 +99,9 @@ def build_output(
     """
     if profile.output_format == "bundle":
         return _build_bundle(cert_infos, profile, dry_run=dry_run)
+
+    if profile.output_format == "pkcs12":
+        return _build_pkcs12(cert_infos, profile, dry_run=dry_run)
 
     result = BuildResult(profile.name, profile.output_path)
 
@@ -246,6 +250,103 @@ def _build_bundle(cert_infos, profile, dry_run=False):
     result.files_written.append(os.path.basename(profile.output_path))
     logger.info(
         "Built bundle profile '%s': %d certs → %s",
+        profile.name, result.cert_count, profile.output_path,
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# PKCS#12 (single-file) output
+# ---------------------------------------------------------------------------
+
+def _build_pkcs12(cert_infos, profile, dry_run=False):
+    # type: (List[CertificateInfo], OutputProfile, bool) -> BuildResult
+    """
+    Write all *cert_infos* as a PKCS#12 file to ``profile.output_path``.
+
+    The bundle contains only CA certificates (no private key, no end-entity
+    certificate).  If ``profile.pkcs12_password`` is non-empty the file is
+    encrypted with that passphrase; otherwise ``NoEncryption`` is used.
+
+    Requires the ``cryptography`` package (already a core dependency).
+    """
+    from cryptography import x509 as _x509
+    from cryptography.hazmat.primitives.serialization import pkcs12 as _pkcs12
+    from cryptography.hazmat.primitives.serialization import (
+        BestAvailableEncryption,
+        NoEncryption,
+    )
+
+    result = BuildResult(profile.name, profile.output_path)
+
+    # Deduplicate by fingerprint; sort for deterministic output
+    seen = set()   # type: set
+    ca_certs = []
+    for ci in sorted(cert_infos, key=lambda c: c.fingerprint_sha256 or ""):
+        fp = ci.fingerprint_sha256
+        if fp in seen:
+            continue
+        seen.add(fp)
+        try:
+            cert = _x509.load_pem_x509_certificate(ci.pem_data)
+        except Exception as exc:
+            logger.warning("PKCS#12: skipping unparseable cert (%s): %s", ci.source_name, exc)
+            continue
+        ca_certs.append(cert)
+
+    result.cert_count = len(ca_certs)
+
+    if dry_run:
+        logger.info(
+            "[dry-run] Would write PKCS#12 of %d certs to %s",
+            result.cert_count, profile.output_path,
+        )
+        return result
+
+    if profile.pkcs12_password:
+        encryption = BestAvailableEncryption(profile.pkcs12_password.encode("utf-8"))
+    else:
+        encryption = NoEncryption()
+
+    p12_data = _pkcs12.serialize_key_and_certificates(
+        name=None,
+        key=None,
+        cert=None,
+        cas=ca_certs or None,
+        encryption_algorithm=encryption,
+    )
+
+    # Ensure parent directory exists
+    parent = os.path.dirname(os.path.abspath(profile.output_path))
+    if not os.path.isdir(parent):
+        os.makedirs(parent, profile.dir_mode)
+
+    # Guard: refuse to overwrite a directory
+    if os.path.isdir(profile.output_path):
+        raise ValueError(
+            "output_path {!r} is a directory; cannot write PKCS#12 file there. "
+            "Remove the directory or choose a different path.".format(
+                profile.output_path
+            )
+        )
+
+    # Atomic write via temp file in same directory
+    fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(p12_data)
+        os.chmod(tmp, profile.file_mode)
+        os.replace(tmp, profile.output_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    result.files_written.append(os.path.basename(profile.output_path))
+    logger.info(
+        "Built PKCS#12 profile '%s': %d certs → %s",
         profile.name, result.cert_count, profile.output_path,
     )
     return result

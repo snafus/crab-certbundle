@@ -9,8 +9,8 @@ from unittest.mock import patch, MagicMock
 from certbundle.cert import parse_pem_data
 from certbundle.output import (
     OutputProfile, build_output, BuildResult,
-    _atomic_swap, _try_renameat2_exchange, _build_bundle, _cert_annotation,
-    _write_igtf_meta, _write_file,
+    _atomic_swap, _try_renameat2_exchange, _build_bundle, _build_pkcs12,
+    _cert_annotation, _write_igtf_meta, _write_file,
 )
 from certbundle.sources.base import SourceResult
 
@@ -650,3 +650,134 @@ class TestWriteFile:
         _write_file(dest, b"data", 0o600)
         mode = oct(os.stat(dest).st_mode & 0o777)
         assert mode == oct(0o600)
+
+
+# ---------------------------------------------------------------------------
+# PKCS#12 output format
+# ---------------------------------------------------------------------------
+
+class TestBuildPkcs12:
+    """Tests for _build_pkcs12 / build_output with output_format='pkcs12'."""
+
+    def _make_p12_profile(self, tmp_path, password="", name="p12-test"):
+        out = str(tmp_path / "bundle.p12")
+        return OutputProfile(name, {
+            "output_path": out,
+            "output_format": "pkcs12",
+            "pkcs12_password": password,
+            "atomic": False,
+        })
+
+    def test_writes_p12_file(self, tmp_path, ca_pem, second_ca_pem):
+        """PKCS#12 output creates a parseable .p12 file."""
+        from cryptography.hazmat.primitives.serialization import pkcs12 as _pkcs12
+        certs = parse_pem_data(ca_pem + b"\n" + second_ca_pem)
+        profile = self._make_p12_profile(tmp_path)
+        result = build_output(certs, profile)
+        assert result.cert_count == 2
+        assert os.path.isfile(profile.output_path)
+        raw = open(profile.output_path, "rb").read()
+        # Must be parseable as PKCS#12
+        _, _, cas = _pkcs12.load_key_and_certificates(raw, None)
+        assert len(cas) == 2
+
+    def test_encrypted_p12(self, tmp_path, ca_pem):
+        """PKCS#12 with a password is parseable using that password."""
+        from cryptography.hazmat.primitives.serialization import pkcs12 as _pkcs12
+        certs = parse_pem_data(ca_pem)
+        profile = self._make_p12_profile(tmp_path, password="s3cr3t")
+        build_output(certs, profile)
+        raw = open(profile.output_path, "rb").read()
+        _, _, cas = _pkcs12.load_key_and_certificates(raw, b"s3cr3t")
+        assert len(cas) == 1
+
+    def test_dry_run_no_file(self, tmp_path, ca_pem):
+        """dry_run=True returns a result without writing anything."""
+        certs = parse_pem_data(ca_pem)
+        profile = self._make_p12_profile(tmp_path)
+        result = build_output(certs, profile, dry_run=True)
+        assert result.cert_count == 1
+        assert not os.path.exists(profile.output_path)
+
+    def test_deduplication(self, tmp_path, ca_pem):
+        """Duplicate certs are counted only once."""
+        certs = parse_pem_data(ca_pem + b"\n" + ca_pem)
+        profile = self._make_p12_profile(tmp_path)
+        result = build_output(certs, profile)
+        assert result.cert_count == 1
+
+    def test_creates_parent_dir(self, tmp_path, ca_pem):
+        """Parent directory is created if it does not exist."""
+        out = str(tmp_path / "new" / "subdir" / "bundle.p12")
+        profile = OutputProfile("p", {
+            "output_path": out,
+            "output_format": "pkcs12",
+            "pkcs12_password": "",
+            "atomic": False,
+        })
+        certs = parse_pem_data(ca_pem)
+        build_output(certs, profile)
+        assert os.path.isfile(out)
+
+    def test_raises_if_output_is_directory(self, tmp_path, ca_pem):
+        """Raises ValueError when output_path is an existing directory."""
+        out = str(tmp_path / "a_dir")
+        os.makedirs(out)
+        profile = OutputProfile("p", {
+            "output_path": out,
+            "output_format": "pkcs12",
+            "pkcs12_password": "",
+            "atomic": False,
+        })
+        certs = parse_pem_data(ca_pem)
+        with pytest.raises(ValueError, match="directory"):
+            build_output(certs, profile)
+
+    def test_unparseable_cert_skipped(self, tmp_path, ca_pem):
+        """A CertificateInfo whose PEM cannot be parsed is skipped with a warning."""
+        from certbundle.cert import CertificateInfo
+        bad = CertificateInfo.__new__(CertificateInfo)
+        bad.pem_data = b"not valid PEM data"
+        bad.fingerprint_sha256 = "deadbeef"
+        bad.source_name = "test"
+        good = parse_pem_data(ca_pem)[0]
+        profile = self._make_p12_profile(tmp_path)
+        result = build_output([bad, good], profile)
+        # Only the good cert is counted
+        assert result.cert_count == 1
+
+    def test_cleanup_on_write_error(self, tmp_path, ca_pem):
+        """Temp file is removed when os.replace raises."""
+        certs = parse_pem_data(ca_pem)
+        profile = self._make_p12_profile(tmp_path)
+        with patch("certbundle.output.os.replace", side_effect=OSError("disk full")):
+            with pytest.raises(OSError, match="disk full"):
+                build_output(certs, profile)
+        # No stray .tmp files
+        assert not any(f.endswith(".tmp") for f in os.listdir(tmp_path))
+
+
+class TestOutputProfilePkcs12:
+    """OutputProfile correctly stores pkcs12_password."""
+
+    def test_default_password_is_empty_string(self, tmp_path):
+        p = OutputProfile("x", {
+            "output_path": str(tmp_path / "out.p12"),
+            "output_format": "pkcs12",
+        })
+        assert p.pkcs12_password == ""
+
+    def test_password_stored(self, tmp_path):
+        p = OutputProfile("x", {
+            "output_path": str(tmp_path / "out.p12"),
+            "output_format": "pkcs12",
+            "pkcs12_password": "hunter2",
+        })
+        assert p.pkcs12_password == "hunter2"
+
+    def test_unknown_format_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="Unknown output_format"):
+            OutputProfile("x", {
+                "output_path": str(tmp_path / "out"),
+                "output_format": "tarball",
+            })

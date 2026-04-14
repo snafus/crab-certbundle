@@ -468,3 +468,76 @@ class TestLoadConfigEnvVars:
         from certbundle.config import ConfigError
         with pytest.raises(ConfigError, match="REQUIRED_OUT"):
             load_config(cfg_path)
+
+
+# ---------------------------------------------------------------------------
+# PKCS#12 config support
+# ---------------------------------------------------------------------------
+
+class TestPkcs12Config:
+    """ProfileConfig correctly parses pkcs12-related fields."""
+
+    def _write(self, path, content):
+        with open(path, "w") as f:
+            f.write(content)
+
+    def _cfg(self, tmp_path, pem_dir, extra_profile_lines=""):
+        cfg_path = str(tmp_path / "crab.yaml")
+        self._write(cfg_path,
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {pem_dir}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_format: pkcs12\n"
+            "    output_path: {out}\n"
+            "{extra}\n".format(
+                pem_dir=pem_dir,
+                out=str(tmp_path / "bundle.p12"),
+                extra=extra_profile_lines,
+            )
+        )
+        return load_config(cfg_path)
+
+    def test_pkcs12_format_accepted(self, tmp_path, pem_dir):
+        cfg = self._cfg(tmp_path, pem_dir)
+        assert cfg.profiles["p"].output_format == "pkcs12"
+
+    def test_default_password_is_empty_string(self, tmp_path, pem_dir):
+        cfg = self._cfg(tmp_path, pem_dir)
+        assert cfg.profiles["p"].pkcs12_password == ""
+
+    def test_password_stored(self, tmp_path, pem_dir):
+        cfg = self._cfg(tmp_path, pem_dir, "    pkcs12_password: 'mySecret'\n")
+        assert cfg.profiles["p"].pkcs12_password == "mySecret"
+
+    def test_non_string_password_raises(self, tmp_path, pem_dir):
+        # YAML integer value for pkcs12_password
+        cfg_path = str(tmp_path / "crab.yaml")
+        self._write(cfg_path,
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {pem_dir}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_format: pkcs12\n"
+            "    output_path: {out}\n"
+            "    pkcs12_password: 12345\n".format(
+                pem_dir=pem_dir,
+                out=str(tmp_path / "bundle.p12"),
+            )
+        )
+        with pytest.raises(ConfigError, match="pkcs12_password.*string"):
+            load_config(cfg_path)
+
+    def test_as_output_profile_dict_includes_password(self, tmp_path, pem_dir):
+        cfg = self._cfg(tmp_path, pem_dir, "    pkcs12_password: 's3cr3t'\n")
+        d = cfg.profiles["p"].as_output_profile_dict()
+        assert d["output_format"] == "pkcs12"
+        assert d["pkcs12_password"] == "s3cr3t"

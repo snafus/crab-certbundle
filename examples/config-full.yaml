@@ -163,6 +163,25 @@ profiles:
       require_ca_flag: true
 
 
+  # PKCS#12 bundle: all trust anchors in a single .p12 file (for Java, browsers, …)
+  # output_path must be a file path (not a directory).
+  # pkcs12_password: leave empty for no encryption, or supply a passphrase.
+  #   Use ${VAR} to inject the secret from the environment in container deployments:
+  #   pkcs12_password: "${PKCS12_PASSPHRASE}"
+  trust-bundle-p12:
+    description: "All trust anchors as an encrypted PKCS#12 file"
+    sources:
+      - igtf-classic-dir
+      - system-roots
+    output_format: pkcs12
+    output_path: /etc/crab/trust-bundle.p12
+    pkcs12_password: "${PKCS12_PASSPHRASE:-}"
+
+    policy:
+      reject_expired: true
+      require_ca_flag: true
+
+
 # ---------------------------------------------------------------------------
 # Refresh / scheduling hints (informational — not executed by certbundle itself)
 # Used by the included systemd timer / cron examples.

@@ -191,13 +191,22 @@ class ProfileConfig:
                 )
 
         output_format = raw.get("output_format", "capath")
-        if output_format not in ("capath", "bundle"):
+        if output_format not in ("capath", "bundle", "pkcs12"):
             raise ConfigError(
-                "Profile '{}': unknown output_format '{}'. Must be 'capath' or 'bundle'".format(
+                "Profile '{}': unknown output_format '{}'. "
+                "Must be 'capath', 'bundle', or 'pkcs12'".format(
                     name, output_format
                 )
             )
         self.output_format = output_format
+
+        # pkcs12_password: empty string → no encryption; use ${VAR} for secrets.
+        pkcs12_password = raw.get("pkcs12_password", "")
+        if not isinstance(pkcs12_password, str):
+            raise ConfigError(
+                "Profile '{}': 'pkcs12_password' must be a string".format(name)
+            )
+        self.pkcs12_password = pkcs12_password
 
         rehash = raw.get("rehash", "auto")
         if rehash not in SUPPORTED_REHASH_MODES:
@@ -232,6 +241,7 @@ class ProfileConfig:
             "staging_path": self.staging_path,
             "atomic": self.atomic,
             "output_format": self.output_format,
+            "pkcs12_password": self.pkcs12_password,
             "annotate_bundle": self.annotate_bundle,
             "rehash": self.rehash,
             "write_symlinks": self.write_symlinks,
