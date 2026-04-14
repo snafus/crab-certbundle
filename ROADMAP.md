@@ -100,7 +100,6 @@ Changes after this point must be backwards-compatible or version-bumped.*
 
 ### Packaging and distribution
 
-- 🔲 Add `crab` as an alias entry point alongside `crabctl`
 - 🔲 PyPI release (`crabctl` package name)
 - 🔲 Debian/Ubuntu `.deb` package (for Ubuntu 22.04 LTS)
 - 🔲 JSON Schema for `crab.yaml` (machine-readable validation, editor
