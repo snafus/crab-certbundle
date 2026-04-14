@@ -19,7 +19,7 @@ import logging
 import os
 import re
 import subprocess
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from crab.cert import parse_pem_file
 from crab.rehash import CERT_HASH_FILE_RE, CRL_HASH_FILE_RE
@@ -122,6 +122,28 @@ def validate_directory(
         verify_issues = _openssl_verify_spot_check(directory, cert_files[:5])
         issues.extend(verify_issues)
 
+    return issues
+
+
+def validate_crls(crl_manager, cert_infos):
+    # type: (Any, list) -> List[ValidationIssue]
+    """
+    Check CRL freshness for *cert_infos* using *crl_manager*.
+
+    Wraps :meth:`~crab.crl.CRLManager.validate_crls` and converts its warning
+    strings into :class:`ValidationIssue` objects so they can be folded into
+    the standard validation pipeline.
+
+    Returns a (possibly empty) list of ``warning``-level issues.
+    """
+    issues = []
+    try:
+        warnings = crl_manager.validate_crls(cert_infos)
+    except Exception as exc:
+        issues.append(ValidationIssue("warning", "CRL validation error: {}".format(exc)))
+        return issues
+    for msg in warnings:
+        issues.append(ValidationIssue("warning", "CRL: {}".format(msg)))
     return issues
 
 

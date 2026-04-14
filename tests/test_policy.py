@@ -227,3 +227,53 @@ class TestPolicyEngineClientAuthOnly:
         decision = engine.evaluate(_get_ca(pem))
         assert decision.accepted is False
         assert "clientAuth" in decision.reason
+
+
+# ---------------------------------------------------------------------------
+# PolicyOutcome — ternary outcome infrastructure
+# ---------------------------------------------------------------------------
+
+class TestPolicyOutcome:
+    """PolicyOutcome constants and PolicyDecision behaviour."""
+
+    def test_accept_outcome_is_accepted(self):
+        from crab.policy import PolicyOutcome, PolicyDecision
+        d = PolicyDecision(PolicyOutcome.ACCEPT, "ok")
+        assert d.accepted is True
+        assert bool(d) is True
+
+    def test_reject_outcome_is_not_accepted(self):
+        from crab.policy import PolicyOutcome, PolicyDecision
+        d = PolicyDecision(PolicyOutcome.REJECT, "bad")
+        assert d.accepted is False
+        assert bool(d) is False
+
+    def test_warn_outcome_is_accepted(self):
+        """WARN passes the cert to output (accepted=True) while flagging it."""
+        from crab.policy import PolicyOutcome, PolicyDecision
+        d = PolicyDecision(PolicyOutcome.WARN, "soft fail")
+        assert d.accepted is True
+        assert bool(d) is True
+
+    def test_accept_sentinel(self):
+        from crab.policy import ACCEPT, PolicyOutcome
+        assert ACCEPT.outcome == PolicyOutcome.ACCEPT
+        assert ACCEPT.accepted is True
+
+    def test_repr_shows_outcome(self):
+        from crab.policy import PolicyOutcome, PolicyDecision
+        d = PolicyDecision(PolicyOutcome.REJECT, "expired")
+        assert "reject" in repr(d)
+        assert "expired" in repr(d)
+
+    def test_filter_includes_warn_certs(self, ca_pem):
+        """PolicyEngine.filter passes WARN certs through to the accepted list."""
+        from crab.policy import PolicyOutcome, PolicyDecision, PolicyEngine
+        from crab.cert import parse_pem_data
+        from unittest.mock import patch
+        certs = parse_pem_data(ca_pem)
+        engine = PolicyEngine({})
+        warn_decision = PolicyDecision(PolicyOutcome.WARN, "test warning")
+        with patch.object(engine, "evaluate", return_value=warn_decision):
+            result = engine.filter(certs)
+        assert len(result) == len(certs)

@@ -46,7 +46,6 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SOURCE_TYPES = ("igtf", "local", "system")
 SUPPORTED_REHASH_MODES = ("auto", "openssl", "builtin")
 _VALID_LOG_LEVELS = frozenset(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
 
@@ -174,12 +173,13 @@ class SourceConfig:
 
     def __init__(self, name, raw):
         # type: (str, dict) -> None
+        from crab.sources import SOURCE_REGISTRY  # deferred to avoid circular import
         self.name = name
         self.type = raw.get("type", "")
-        if self.type not in SUPPORTED_SOURCE_TYPES:
+        if self.type not in SOURCE_REGISTRY:
             raise ConfigError(
                 "Source '{}': unsupported type '{}'. Must be one of: {}".format(
-                    name, self.type, ", ".join(SUPPORTED_SOURCE_TYPES)
+                    name, self.type, ", ".join(sorted(SOURCE_REGISTRY))
                 )
             )
         self.raw = raw  # keep the full dict for source constructors
@@ -407,27 +407,18 @@ def _check_staging_device(output_path, staging_path, profile_name):
 
 
 # ---------------------------------------------------------------------------
-# Source factory
+# Source factory — re-exported from crab.sources for backwards compatibility
 # ---------------------------------------------------------------------------
-
-def _get_type_map():
-    # type: () -> dict
-    # Deferred import to avoid circular imports at module load time.
-    from crab.sources.igtf import IGTFSource
-    from crab.sources.local import LocalSource
-    from crab.sources.system import SystemSource
-    return {
-        "igtf": IGTFSource,
-        "local": LocalSource,
-        "system": SystemSource,
-    }
-
 
 def build_source(source_config):
     # type: (SourceConfig) -> Any
     """
     Instantiate the appropriate :class:`~crab.sources.base.CertificateSource`
     subclass for *source_config*.
+
+    The canonical implementation lives in :mod:`crab.sources`.  This wrapper
+    is kept here so existing callers of ``from crab.config import build_source``
+    continue to work.
     """
-    cls = _get_type_map()[source_config.type]
-    return cls(source_config.name, source_config.raw)
+    from crab.sources import build_source as _build_source
+    return _build_source(source_config)

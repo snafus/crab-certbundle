@@ -303,3 +303,43 @@ class TestNonCACertWarning:
         issues = validate_directory(str(tmp_path), check_hashes=False, run_openssl=False)
         warn_msgs = [i.message for i in issues if i.level == "warning"]
         assert any("CA flag" in m for m in warn_msgs)
+
+
+# ---------------------------------------------------------------------------
+# validate_crls integration
+# ---------------------------------------------------------------------------
+
+class TestValidateCrls:
+    """validate_crls converts CRLManager warnings to ValidationIssue objects."""
+
+    def test_returns_warning_for_each_crl_problem(self):
+        from unittest.mock import MagicMock
+        from crab.validation import validate_crls
+        crl_mgr = MagicMock()
+        crl_mgr.validate_crls.return_value = [
+            "Missing CRL for: CN=Test CA",
+            "Stale CRL for CN=Other CA",
+        ]
+        issues = validate_crls(crl_mgr, [])
+        assert len(issues) == 2
+        assert all(i.level == "warning" for i in issues)
+        assert "Missing CRL" in issues[0].message
+        assert "Stale CRL" in issues[1].message
+
+    def test_returns_empty_list_when_no_problems(self):
+        from unittest.mock import MagicMock
+        from crab.validation import validate_crls
+        crl_mgr = MagicMock()
+        crl_mgr.validate_crls.return_value = []
+        issues = validate_crls(crl_mgr, [])
+        assert issues == []
+
+    def test_crl_manager_exception_becomes_warning(self):
+        from unittest.mock import MagicMock
+        from crab.validation import validate_crls
+        crl_mgr = MagicMock()
+        crl_mgr.validate_crls.side_effect = RuntimeError("disk error")
+        issues = validate_crls(crl_mgr, [])
+        assert len(issues) == 1
+        assert issues[0].level == "warning"
+        assert "disk error" in issues[0].message

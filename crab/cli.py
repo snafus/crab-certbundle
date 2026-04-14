@@ -26,7 +26,8 @@ import click
 
 from crab import __version__
 from crab.cert import parse_pem_file
-from crab.config import load_config, build_source, ConfigError
+from crab.config import load_config, ConfigError
+from crab.sources import build_source
 from crab.crl import CRLManager
 from crab.output import OutputProfile, build_output
 from crab.policy import PolicyEngine
@@ -38,7 +39,7 @@ from crab.reporting import (
     render_source_report,
     render_inventory,
 )
-from crab.validation import validate_directory, has_errors, has_warnings
+from crab.validation import validate_directory, validate_crls, has_errors, has_warnings
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +268,13 @@ def validate(ctx, targets, no_hash_check, no_openssl, output_json):
             check_hashes=not no_hash_check,
             run_openssl=not no_openssl,
         )
+
+        # CRL freshness check — only when validating a named profile with CRLs enabled
+        if label in cfg.profiles and cfg.profiles[label].include_crls:
+            profile_cfg = cfg.profiles[label]
+            crl_mgr = CRLManager(profile_cfg.crl, profile_cfg.output_path)
+            cert_infos = _load_certs_from_directory(directory, label)
+            issues.extend(validate_crls(crl_mgr, cert_infos))
         if output_json:
             all_results.append({
                 "target": label,

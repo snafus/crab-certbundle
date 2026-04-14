@@ -249,3 +249,39 @@ class TestFindSystemBundle:
     def test_returns_none_for_empty_candidate_list(self):
         with patch("crab.sources.system._CANDIDATE_PATHS", []):
             assert _find_system_bundle() is None
+
+
+# ---------------------------------------------------------------------------
+# Source registry
+# ---------------------------------------------------------------------------
+
+class TestSourceRegistry:
+    """SOURCE_REGISTRY is the authoritative source type map."""
+
+    def test_registry_contains_all_builtin_types(self):
+        from crab.sources import SOURCE_REGISTRY
+        assert "igtf" in SOURCE_REGISTRY
+        assert "local" in SOURCE_REGISTRY
+        assert "system" in SOURCE_REGISTRY
+
+    def test_build_source_uses_registry(self, tmp_path, ca_pem):
+        from crab.sources import build_source
+        from crab.config import SourceConfig
+        (tmp_path / "root.pem").write_bytes(ca_pem)
+        sc = SourceConfig("test", {"type": "local", "path": str(tmp_path)})
+        src = build_source(sc)
+        from crab.sources.local import LocalSource
+        assert isinstance(src, LocalSource)
+
+    def test_config_rejects_unknown_type(self):
+        from crab.config import SourceConfig, ConfigError
+        with pytest.raises(ConfigError, match="unsupported type"):
+            SourceConfig("bad", {"type": "nonexistent"})
+
+    def test_config_build_source_compat(self, tmp_path, ca_pem):
+        """build_source re-exported from config still works."""
+        from crab.config import build_source, SourceConfig
+        (tmp_path / "root.pem").write_bytes(ca_pem)
+        sc = SourceConfig("t", {"type": "local", "path": str(tmp_path)})
+        src = build_source(sc)
+        assert src is not None

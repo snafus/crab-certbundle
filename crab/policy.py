@@ -27,33 +27,54 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Decision object
+# Outcome constants and decision object
 # ---------------------------------------------------------------------------
+
+class PolicyOutcome(object):
+    """
+    Ternary outcome for a policy evaluation.
+
+    - ``ACCEPT`` — certificate passes; include in output.
+    - ``WARN``   — certificate passes with a policy warning; include in output
+                   but surface to the operator (used by ``warn:`` rules, 0.4.0).
+    - ``REJECT`` — certificate fails; exclude from output.
+    """
+    ACCEPT = "accept"
+    WARN   = "warn"
+    REJECT = "reject"
+
 
 class PolicyDecision:
     """Outcome of evaluating one certificate against a policy."""
 
-    __slots__ = ("accepted", "reason")
+    __slots__ = ("outcome", "reason")
 
-    def __init__(self, accepted, reason=""):
-        # type: (bool, str) -> None
-        self.accepted = accepted
+    def __init__(self, outcome, reason=""):
+        # type: (str, str) -> None
+        self.outcome = outcome
         self.reason = reason
+
+    @property
+    def accepted(self):
+        # type: () -> bool
+        """True when the certificate should appear in the output (ACCEPT or WARN)."""
+        return self.outcome != PolicyOutcome.REJECT
 
     def __bool__(self):
         return self.accepted
 
     def __repr__(self):
-        return "PolicyDecision(accepted={}, reason={!r})".format(
-            self.accepted, self.reason
+        return "PolicyDecision(outcome={!r}, reason={!r})".format(
+            self.outcome, self.reason
         )
 
 
-ACCEPT = PolicyDecision(True, "accepted")
+ACCEPT = PolicyDecision(PolicyOutcome.ACCEPT, "accepted")
 
 
 def _reject(reason):
-    return PolicyDecision(False, reason)
+    # type: (str) -> PolicyDecision
+    return PolicyDecision(PolicyOutcome.REJECT, reason)
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +177,13 @@ class PolicyEngine:
         rejected = []
         for ci in cert_infos:
             decision = self.evaluate(ci)
-            if decision.accepted:
+            if decision.outcome == PolicyOutcome.WARN:
+                accepted.append(ci)
+                logger.warning(
+                    "Policy warning for %s [%s]: %s",
+                    ci.subject, ci.source_name or "?", decision.reason,
+                )
+            elif decision.accepted:
                 accepted.append(ci)
             else:
                 rejected.append((ci, decision.reason))
