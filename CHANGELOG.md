@@ -10,11 +10,27 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- Nothing yet.
+
+- `IGTFSource` URL mode now caches downloaded tarballs to disk (defaulting to
+  the system temp directory) and performs conditional GETs using
+  `If-None-Match` / `If-Modified-Since` headers, avoiding redundant downloads
+  when the server supports ETags or Last-Modified.
+- `cache_dir` config key for `IGTFSource` to control where tarballs are cached
+  (previously accepted but silently ignored).
+- `cache_ttl_days` config key (default: 30) — cache files in `cache_dir`
+  older than this many days are automatically evicted when a new version is
+  written; set to 0 to disable eviction.
+- `cache_pinned` config key (default: false) — when true, the cached copy is
+  returned immediately without any network request; useful for air-gapped
+  deployments or reproducible builds locked to a specific IGTF version.
+- `download_with_cache` in `certbundle.sources.http` now exposes
+  `cache_ttl_days` and `cache_pinned` parameters.
+- `_evict_stale_cache` helper function to clean up superseded `.tar.gz` /
+  `.meta` file pairs from the cache directory.
 
 ---
 
-## [0.1.0] — 2026-04-12
+## [0.1.0] — 2026-04-13
 
 Initial public release.
 
@@ -72,21 +88,44 @@ Initial public release.
 - `docs/ARCHITECTURE.md` covering pipeline, hash strategy, atomic swap,
   policy model, IGTF integration, Python 3.6 compatibility, security notes
 
-**Tests** — 160+ tests across 8 test modules
-- `test_cert` — PEM parsing, model attributes, edge cases
+**Tests** — 312 tests across 11 test modules; 88 % line coverage
+- `test_cert` — PEM parsing, model attributes, EKU predicates, equality
+- `test_cli` — full CLI via Click test runner; all commands; JSON output;
+  dry-run; exit codes; env var config; source error handling
 - `test_config` — YAML loading, validation, error paths
 - `test_crl` — CRLInfo, CRLManager dry-run, security (hash injection, TLS),
-  URL source logic, date parsing
-- `test_cli` — full CLI via Click test runner; all commands; JSON output;
-  dry-run; exit codes; env var config
-- `test_output` — directory building, deduplication, atomic swap,
-  permissions
+  `.r0` overwrite regression, URL source logic, date parsing
+- `test_http` — URL scheme validation, download retry/backoff, size limits
+- `test_igtf` — directory, tarball, and HTTP URL loading; `.info` / extra-file
+  passthrough; policy filtering; path-traversal protection; unreadable-file
+  handling
+- `test_output` — directory building, deduplication, atomic swap, permissions
 - `test_policy` — accept/reject paths; include/exclude rules; EKU; IGTF
-  policy tag; filter list
-- `test_rehash` — hash computation, caching, collision handling, DER walk
+  policy tag; reject_not_yet_valid; reject_path_len_zero; filter list
+- `test_rehash` — hash computation, caching, collision handling, DER walk;
+  pure-Python fallback; multi-byte DER length encodings; `rehash_directory`
+  external tool fallback; pyOpenSSL strategy paths
 - `test_reporting` — diff computation, text/JSON rendering, inventory
 - `test_sources` — IGTF dir/tarball, local dir/file/bundle, info parsing
-- `test_validation` — directory health checks, expired cert warnings
+- `test_validation` — directory health checks; hash-filename mismatch; expired
+  cert warnings; multi-cert file; unrecognised files; openssl graceful skip
+
+### Fixed
+
+- `CRLManager._write_crl` accumulated stale `.rN` files when a separate
+  `crl_path` was configured; now always writes to `.r0` via `os.replace()`.
+- `crabctl validate --json` accepted the flag but always printed plain text;
+  JSON accumulation and output are now correctly conditional on the flag.
+- `OutputProfile` `file_mode` / `dir_mode` string-parsing branch used
+  `int("0o644", 8)` which raises `ValueError`; simplified to `int(value)`.
+- `ValidationIssue` used a bare `assert` for level validation, silently
+  bypassed under `python -O`; replaced with explicit `raise ValueError`.
+- `systemd/certbundle.service` `ExecStart` path was `/usr/local/bin/crabctl`
+  but the RPM installs to `/usr/bin/crabctl`.
+- RPM spec: EL8 system pip (9.0.3) does not support `--prefer-binary`; added
+  pip self-upgrade step in `%install` before vendoring.
+- RPM spec: `%{_unitdir}` undefined on EL9 without `systemd-rpm-macros`;
+  added `BuildRequires: systemd-rpm-macros` and fallback `%global`.
 
 ### Security
 

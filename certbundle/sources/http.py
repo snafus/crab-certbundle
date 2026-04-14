@@ -155,10 +155,37 @@ def _cache_paths(url, cache_dir):
     )
 
 
+def _evict_stale_cache(cache_dir, keep_path, ttl_days):
+    # type: (str, str, int) -> None
+    """Delete ``*.tar.gz`` cache files (and their ``.meta`` sidecars) in
+    *cache_dir* that are older than *ttl_days*, excluding *keep_path*."""
+    cutoff = time.time() - ttl_days * 86400
+    try:
+        for name in os.listdir(cache_dir):
+            if not name.endswith(".tar.gz"):
+                continue
+            full = os.path.join(cache_dir, name)
+            if os.path.abspath(full) == os.path.abspath(keep_path):
+                continue
+            try:
+                if os.path.getmtime(full) < cutoff:
+                    os.unlink(full)
+                    meta = full[:-len(".tar.gz")] + ".meta"
+                    if os.path.isfile(meta):
+                        os.unlink(meta)
+                    logger.debug("Evicted stale cache file: %s", full)
+            except OSError as exc:
+                logger.debug("Could not evict %s: %s", full, exc)
+    except OSError as exc:
+        logger.debug("Could not scan cache dir for eviction: %s", exc)
+
+
 def download_with_cache(
     url,                    # type: str
     cache_dir,              # type: str
     verify_tls=True,        # type: bool
+    cache_ttl_days=30,      # type: int
+    cache_pinned=False,     # type: bool
 ):
     # type: (...) -> bytes
     """
@@ -174,6 +201,15 @@ def download_with_cache(
       cached copy, allowing offline and air-gapped rebuilds to succeed.
     - **Network failure without cached copy**: raises :exc:`IOError`.
 
+    Parameters:
+        cache_ttl_days: Delete cache files in *cache_dir* older than this many
+            days when a new version is written.  Set to 0 to disable eviction.
+            Default: 30.
+        cache_pinned: If ``True`` and a cached copy already exists, return it
+            immediately without any network request.  Useful for air-gapped
+            sites that manually populate *cache_dir*, or for reproducible
+            builds locked to a specific version.  Default: ``False``.
+
     Raises :exc:`ValueError` for non-HTTP(S) URLs (same as
     :func:`download_to_bytes`).
     """
@@ -182,6 +218,12 @@ def download_with_cache(
     _validate_url(url)
 
     data_path, meta_path = _cache_paths(url, cache_dir)
+
+    # Pinned mode: return cached copy immediately, no network contact
+    if cache_pinned and os.path.isfile(data_path):
+        logger.debug("Pinned — using cached copy without network check: %s", data_path)
+        with open(data_path, "rb") as fh:
+            return fh.read()
 
     # Load existing cache metadata (ETag / Last-Modified)
     meta = {}  # type: dict
@@ -255,6 +297,9 @@ def download_with_cache(
                 new_meta["last_modified"] = resp.headers["Last-Modified"]
             with open(meta_path, "w") as fh:
                 json.dump(new_meta, fh)
+            # Evict old cache files for superseded versions
+            if cache_ttl_days > 0:
+                _evict_stale_cache(cache_dir, data_path, cache_ttl_days)
         except Exception as exc:
             logger.warning("Could not write cache for %s: %s", url, exc)
 

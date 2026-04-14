@@ -9,9 +9,13 @@ import pytest
 from unittest.mock import patch, MagicMock, call
 
 
+import json
+import time
+
 from certbundle.sources.http import (
     _validate_url,
     _cache_paths,
+    _evict_stale_cache,
     download_to_bytes,
     download_to_file,
     download_with_cache,
@@ -223,7 +227,6 @@ class TestDownloadWithCache:
         resp.headers = {"ETag": '"xyz"'}
         with patch("requests.get", return_value=resp):
             download_with_cache("http://example.com/b.tar.gz", str(tmp_path))
-        import json
         _, meta_path = _cache_paths("http://example.com/b.tar.gz", str(tmp_path))
         meta = json.load(open(meta_path))
         assert meta["etag"] == '"xyz"'
@@ -234,7 +237,6 @@ class TestDownloadWithCache:
         # Pre-populate cache
         with open(data_path, "wb") as f:
             f.write(b"cached content")
-        import json
         with open(meta_path, "w") as f:
             json.dump({"url": url, "etag": '"abc"'}, f)
         # Server returns 304
@@ -249,7 +251,6 @@ class TestDownloadWithCache:
         data_path, meta_path = _cache_paths(url, str(tmp_path))
         with open(data_path, "wb") as f:
             f.write(b"cached")
-        import json
         with open(meta_path, "w") as f:
             json.dump({"url": url, "etag": '"myetag"'}, f)
         resp = MagicMock()
@@ -288,3 +289,153 @@ class TestDownloadWithCache:
     def test_raises_on_bad_scheme(self, tmp_path):
         with pytest.raises(ValueError):
             download_to_file("ftp://example.com/f", str(tmp_path / "out"))
+
+    def test_ttl_eviction_removes_old_files(self, tmp_path):
+        """A stale cache file (mtime older than TTL) is deleted when a new version arrives."""
+        url = "http://example.com/b.tar.gz"
+        data_path, _ = _cache_paths(url, str(tmp_path))
+
+        # Plant an old cache file for a *different* URL (simulates superseded version)
+        old_path = str(tmp_path / "old-version-aabbccdd.tar.gz")
+        with open(old_path, "wb") as f:
+            f.write(b"old tarball")
+        # Make it 31 days old
+        old_mtime = time.time() - 31 * 86400
+        os.utime(old_path, (old_mtime, old_mtime))
+
+        resp = _mock_response([b"new tarball"])
+        resp.headers = {}
+        with patch("requests.get", return_value=resp):
+            download_with_cache(url, str(tmp_path), cache_ttl_days=30)
+
+        assert not os.path.exists(old_path), "Stale cache file should have been evicted"
+
+    def test_ttl_zero_disables_eviction(self, tmp_path):
+        """cache_ttl_days=0 skips eviction entirely."""
+        url = "http://example.com/b.tar.gz"
+        old_path = str(tmp_path / "old-version-aabbccdd.tar.gz")
+        with open(old_path, "wb") as f:
+            f.write(b"old tarball")
+        old_mtime = time.time() - 365 * 86400
+        os.utime(old_path, (old_mtime, old_mtime))
+
+        resp = _mock_response([b"new tarball"])
+        resp.headers = {}
+        with patch("requests.get", return_value=resp):
+            download_with_cache(url, str(tmp_path), cache_ttl_days=0)
+
+        assert os.path.exists(old_path), "Eviction disabled — old file should remain"
+
+    def test_ttl_eviction_preserves_current_file(self, tmp_path):
+        """The freshly-written cache file is never evicted even if TTL is tiny."""
+        url = "http://example.com/b.tar.gz"
+        data_path, _ = _cache_paths(url, str(tmp_path))
+
+        resp = _mock_response([b"tarball"])
+        resp.headers = {}
+        with patch("requests.get", return_value=resp):
+            download_with_cache(url, str(tmp_path), cache_ttl_days=1)
+
+        assert os.path.isfile(data_path), "Current cache file must not be self-evicted"
+
+    def test_ttl_eviction_deletes_meta_sidecar(self, tmp_path):
+        """When an old .tar.gz is evicted its .meta sidecar is also removed."""
+        url = "http://example.com/b.tar.gz"
+        old_stem = str(tmp_path / "old-version-aabbccdd")
+        old_tar = old_stem + ".tar.gz"
+        old_meta = old_stem + ".meta"
+        with open(old_tar, "wb") as f:
+            f.write(b"old tarball")
+        with open(old_meta, "w") as f:
+            json.dump({"url": "http://example.com/old.tar.gz"}, f)
+        old_mtime = time.time() - 60 * 86400
+        os.utime(old_tar, (old_mtime, old_mtime))
+
+        resp = _mock_response([b"new tarball"])
+        resp.headers = {}
+        with patch("requests.get", return_value=resp):
+            download_with_cache(url, str(tmp_path), cache_ttl_days=30)
+
+        assert not os.path.exists(old_tar)
+        assert not os.path.exists(old_meta), "Meta sidecar should be evicted with its tarball"
+
+    def test_cache_pinned_skips_network(self, tmp_path):
+        """cache_pinned=True returns cached copy without any network request."""
+        url = "http://example.com/b.tar.gz"
+        data_path, _ = _cache_paths(url, str(tmp_path))
+        with open(data_path, "wb") as f:
+            f.write(b"pinned content")
+
+        with patch("requests.get") as mock_get:
+            data = download_with_cache(url, str(tmp_path), cache_pinned=True)
+
+        assert data == b"pinned content"
+        mock_get.assert_not_called()
+
+    def test_cache_pinned_without_cache_downloads(self, tmp_path):
+        """cache_pinned=True but no cached copy — falls through to normal download."""
+        resp = _mock_response([b"fresh content"])
+        resp.headers = {}
+        with patch("requests.get", return_value=resp):
+            data = download_with_cache(
+                "http://example.com/b.tar.gz", str(tmp_path), cache_pinned=True
+            )
+        assert data == b"fresh content"
+
+
+# ---------------------------------------------------------------------------
+# _evict_stale_cache — direct unit tests
+# ---------------------------------------------------------------------------
+
+class TestEvictStaleCache:
+    def _old_mtime(self, days=60):
+        return time.time() - days * 86400
+
+    def test_removes_old_tar_gz(self, tmp_path):
+        old = str(tmp_path / "old-aabbccdd.tar.gz")
+        with open(old, "wb") as f:
+            f.write(b"x")
+        os.utime(old, (self._old_mtime(), self._old_mtime()))
+        _evict_stale_cache(str(tmp_path), keep_path="/nonexistent", ttl_days=30)
+        assert not os.path.exists(old)
+
+    def test_removes_meta_sidecar_with_tar(self, tmp_path):
+        stem = str(tmp_path / "old-aabbccdd")
+        tar = stem + ".tar.gz"
+        meta = stem + ".meta"
+        with open(tar, "wb") as f:
+            f.write(b"x")
+        with open(meta, "w") as f:
+            f.write("{}")
+        os.utime(tar, (self._old_mtime(), self._old_mtime()))
+        _evict_stale_cache(str(tmp_path), keep_path="/nonexistent", ttl_days=30)
+        assert not os.path.exists(tar)
+        assert not os.path.exists(meta)
+
+    def test_skips_keep_path(self, tmp_path):
+        keep = str(tmp_path / "keep-aabbccdd.tar.gz")
+        with open(keep, "wb") as f:
+            f.write(b"keep")
+        os.utime(keep, (self._old_mtime(), self._old_mtime()))
+        _evict_stale_cache(str(tmp_path), keep_path=keep, ttl_days=30)
+        assert os.path.exists(keep)
+
+    def test_skips_fresh_files(self, tmp_path):
+        fresh = str(tmp_path / "fresh-aabbccdd.tar.gz")
+        with open(fresh, "wb") as f:
+            f.write(b"x")
+        # mtime defaults to now — well within TTL
+        _evict_stale_cache(str(tmp_path), keep_path="/nonexistent", ttl_days=30)
+        assert os.path.exists(fresh)
+
+    def test_skips_non_tar_gz_files(self, tmp_path):
+        other = str(tmp_path / "data.json")
+        with open(other, "w") as f:
+            f.write("{}")
+        os.utime(other, (self._old_mtime(), self._old_mtime()))
+        _evict_stale_cache(str(tmp_path), keep_path="/nonexistent", ttl_days=30)
+        assert os.path.exists(other)
+
+    def test_nonexistent_cache_dir_is_silent(self, tmp_path):
+        """Evicting from a directory that doesn't exist does not raise."""
+        _evict_stale_cache(str(tmp_path / "no_such_dir"), keep_path="/x", ttl_days=30)

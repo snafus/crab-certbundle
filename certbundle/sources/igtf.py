@@ -74,8 +74,12 @@ class IGTFSource(CertificateSource):
 
         elif "url" in self.config:
             cache_dir = self.config.get("cache_dir", tempfile.gettempdir())
+            cache_ttl_days = int(self.config.get("cache_ttl_days", 30))
+            cache_pinned = bool(self.config.get("cache_pinned", False))
             raw_certs, info_files, extra_files, errs = _load_url(
-                self.config["url"], cache_dir, self.name
+                self.config["url"], cache_dir, self.name,
+                cache_ttl_days=cache_ttl_days,
+                cache_pinned=cache_pinned,
             )
             errors.extend(errs)
 
@@ -226,11 +230,15 @@ def _load_tarball(tarball_path, source_name):
     return certs, info_files, extra_files, errors
 
 
-def _load_url(url, cache_dir, source_name):
-    # type: (str, str, str) -> Tuple[List[CertificateInfo], Dict, Dict, List[str]]
+def _load_url(url, cache_dir, source_name, cache_ttl_days=30, cache_pinned=False):
+    # type: (str, str, str, int, bool) -> Tuple[List[CertificateInfo], Dict, Dict, List[str]]
     errors = []
     try:
-        tarball_data = download_with_cache(url, cache_dir)
+        tarball_data = download_with_cache(
+            url, cache_dir,
+            cache_ttl_days=cache_ttl_days,
+            cache_pinned=cache_pinned,
+        )
     except Exception as exc:
         errors.append("Failed to download {}: {}".format(url, exc))
         return [], {}, {}, errors
