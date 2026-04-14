@@ -147,3 +147,105 @@ class TestParseInfoFile:
         text = "subjectdn = /C=GB/O=Test/CN=Test CA\n"
         result = _parse_info_file(text)
         assert result["subjectdn"] == "/C=GB/O=Test/CN=Test CA"
+
+
+# ---------------------------------------------------------------------------
+# SystemSource
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch
+from certbundle.sources.system import SystemSource, _find_system_bundle, _CANDIDATE_PATHS
+
+
+class TestSystemSource:
+    def test_explicit_path_loads_certs(self, tmp_path, ca_pem):
+        bundle = tmp_path / "bundle.pem"
+        bundle.write_bytes(ca_pem)
+        src = SystemSource("test", {"path": str(bundle)})
+        result = src.load()
+        assert len(result.certificates) == 1
+        assert result.errors == []
+
+    def test_explicit_path_metadata(self, tmp_path, ca_pem):
+        bundle = tmp_path / "bundle.pem"
+        bundle.write_bytes(ca_pem)
+        src = SystemSource("test", {"path": str(bundle)})
+        result = src.load()
+        assert result.metadata["path"] == str(bundle)
+        assert result.metadata["cert_count"] == 1
+        assert result.metadata["auto_detected"] is False
+        assert result.metadata["source_type"] == "system"
+
+    def test_missing_explicit_path_returns_error(self, tmp_path):
+        src = SystemSource("test", {"path": str(tmp_path / "no-such.pem")})
+        result = src.load()
+        assert result.errors
+        assert len(result.certificates) == 0
+
+    def test_auto_detection_uses_first_candidate(self, tmp_path, ca_pem):
+        bundle = tmp_path / "ca-bundle.pem"
+        bundle.write_bytes(ca_pem)
+        with patch("certbundle.sources.system._CANDIDATE_PATHS", [str(bundle)]):
+            src = SystemSource("test", {})
+            result = src.load()
+        assert len(result.certificates) == 1
+        assert result.metadata["auto_detected"] is True
+
+    def test_auto_detection_skips_missing_candidates(self, tmp_path, ca_pem):
+        missing = str(tmp_path / "missing.pem")
+        present = tmp_path / "present.pem"
+        present.write_bytes(ca_pem)
+        with patch("certbundle.sources.system._CANDIDATE_PATHS",
+                   [missing, str(present)]):
+            src = SystemSource("test", {})
+            result = src.load()
+        assert len(result.certificates) == 1
+
+    def test_no_candidates_found_returns_error(self):
+        with patch("certbundle.sources.system._CANDIDATE_PATHS", []):
+            src = SystemSource("test", {})
+            result = src.load()
+        assert result.errors
+        assert "could not find" in result.errors[0]
+        assert len(result.certificates) == 0
+
+    def test_multi_cert_bundle_loads_all(self, tmp_path, ca_pem, second_ca_pem):
+        bundle = tmp_path / "bundle.pem"
+        bundle.write_bytes(ca_pem + b"\n" + second_ca_pem)
+        src = SystemSource("test", {"path": str(bundle)})
+        result = src.load()
+        assert len(result.certificates) == 2
+        assert result.errors == []
+
+    def test_no_pem_blocks_returns_empty(self, tmp_path):
+        bundle = tmp_path / "bundle.pem"
+        bundle.write_bytes(b"# comment only\n")
+        src = SystemSource("test", {"path": str(bundle)})
+        result = src.load()
+        assert result.errors == []
+        assert result.certificates == []
+
+    def test_tilde_expansion_in_path(self, tmp_path, ca_pem, monkeypatch):
+        bundle = tmp_path / "bundle.pem"
+        bundle.write_bytes(ca_pem)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        src = SystemSource("test", {"path": "~/bundle.pem"})
+        result = src.load()
+        assert len(result.certificates) == 1
+
+
+class TestFindSystemBundle:
+    def test_returns_first_existing_path(self, tmp_path, ca_pem):
+        p1 = str(tmp_path / "missing.pem")
+        p2 = tmp_path / "found.pem"
+        p2.write_bytes(ca_pem)
+        with patch("certbundle.sources.system._CANDIDATE_PATHS", [p1, str(p2)]):
+            assert _find_system_bundle() == str(p2)
+
+    def test_returns_none_when_nothing_found(self):
+        with patch("certbundle.sources.system._CANDIDATE_PATHS", ["/no/such/path"]):
+            assert _find_system_bundle() is None
+
+    def test_returns_none_for_empty_candidate_list(self):
+        with patch("certbundle.sources.system._CANDIDATE_PATHS", []):
+            assert _find_system_bundle() is None

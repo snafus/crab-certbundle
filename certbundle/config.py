@@ -24,7 +24,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SOURCE_TYPES = ("igtf", "local")
+SUPPORTED_SOURCE_TYPES = ("igtf", "local", "system")
 SUPPORTED_REHASH_MODES = ("auto", "openssl", "builtin")
 _VALID_LOG_LEVELS = frozenset(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
 
@@ -296,9 +296,11 @@ def _get_type_map():
     # Deferred import to avoid circular imports at module load time.
     from certbundle.sources.igtf import IGTFSource
     from certbundle.sources.local import LocalSource
+    from certbundle.sources.system import SystemSource
     return {
         "igtf": IGTFSource,
         "local": LocalSource,
+        "system": SystemSource,
     }
 
 

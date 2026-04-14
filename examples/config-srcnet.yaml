@@ -24,9 +24,10 @@ sources:
       - iota
 
   system-tls:
-    type: local
-    # System CA bundle (ca-certificates package on EL / Rocky)
-    path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+    type: system
+    # Auto-detects the OS CA bundle (EL, Debian/Ubuntu, Alpine, macOS, …).
+    # Override with an explicit path if your bundle is non-standard:
+    # path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 
   srcnet-extra:
     type: local
