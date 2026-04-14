@@ -121,6 +121,22 @@ jobs:
           ${{ steps.py.outputs.bin }} -m pytest tests/ -v --tb=short \
             --cov=certbundle --cov-report=term-missing
 
+  # ── Docker build validation (no push) ────────────────────────────────────
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build production image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+
   # ── RPM builds (run after tests pass) ────────────────────────────────────
   rpm-el8:
     name: RPM / EL8
