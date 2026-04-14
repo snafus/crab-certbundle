@@ -468,6 +468,85 @@ def fetch_crls(ctx, profiles, dry_run):
 
 
 # ---------------------------------------------------------------------------
+# refresh
+# ---------------------------------------------------------------------------
+
+@main.command("refresh")
+@click.argument("profiles", nargs=-1, metavar="[PROFILE...]")
+@click.option("--dry-run", is_flag=True, help="Show what would be done without writing.")
+@click.option("--report", is_flag=True, help="Print a source/policy report after building.")
+@click.pass_context
+def refresh(ctx, profiles, dry_run, report):
+    """
+    Refresh CRLs then rebuild output profile(s).
+
+    Runs in two coordinated steps for each profile:
+
+    \b
+    1. Fetch CRLs — uses certificates already present in the output
+       directory.  Failures are reported as warnings and do not prevent
+       the build from running.
+    2. Build — reloads all sources, applies policy, and writes the output.
+       The CRL step inside build is skipped (CRLs were just refreshed).
+
+    This is the recommended command for scheduled operation (cron, systemd
+    timer, container loop).  Replacing two separate invocations of
+    fetch-crls and build with a single refresh also simplifies container
+    entrypoint configuration.
+
+    If no PROFILE names are given, all profiles are refreshed.
+
+    \b
+    Examples:
+        crabctl refresh
+        crabctl refresh grid
+        crabctl refresh --dry-run
+    """
+    cfg = _load_config_or_exit(ctx)
+    profile_names = list(profiles) or list(cfg.profiles.keys())
+
+    total_errors = 0
+    for pname in profile_names:
+        if pname not in cfg.profiles:
+            click.echo("ERROR: Unknown profile '{}'. Available: {}".format(
+                pname, ", ".join(cfg.profiles.keys())
+            ), err=True)
+            total_errors += 1
+            continue
+
+        profile_cfg = cfg.profiles[pname]
+
+        # Step 1: CRL pre-fetch using existing output certs (best-effort)
+        if profile_cfg.include_crls:
+            click.echo("Fetching CRLs for profile '{}'...".format(pname))
+            try:
+                certs = _load_profile_certs(cfg, pname)
+                crl_mgr = CRLManager(profile_cfg.crl, profile_cfg.output_path)
+                crl_result = crl_mgr.update_crls(certs, dry_run=dry_run)
+                click.echo("  CRLs: {} updated, {} failed, {} no URL".format(
+                    len(crl_result.updated), len(crl_result.failed), len(crl_result.missing)
+                ))
+                for err in crl_result.errors:
+                    click.echo("  CRL WARNING: {}".format(err), err=True)
+            except Exception as exc:
+                click.echo(
+                    "  WARNING: CRL fetch failed for '{}': {} — continuing with build".format(
+                        pname, exc
+                    ),
+                    err=True,
+                )
+
+        # Step 2: Full build; skip the internal CRL step since we just ran it.
+        click.echo("Building profile '{}'...".format(pname))
+        errors = _build_profile(
+            cfg, pname, dry_run=dry_run, skip_crls=True, do_report=report
+        )
+        total_errors += errors
+
+    sys.exit(1 if total_errors else 0)
+
+
+# ---------------------------------------------------------------------------
 # show-config
 # ---------------------------------------------------------------------------
 

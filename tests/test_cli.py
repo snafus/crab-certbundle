@@ -311,6 +311,77 @@ class TestFetchCrls:
 
 
 # ---------------------------------------------------------------------------
+# refresh
+# ---------------------------------------------------------------------------
+
+class TestRefresh:
+    def test_refresh_builds_output(self, runner, cli_env):
+        result = runner.invoke(main, ["--config", cli_env["config"], "refresh"])
+        assert result.exit_code == 0
+        assert os.path.isdir(cli_env["out"])
+
+    def test_refresh_dry_run_no_output(self, runner, cli_env):
+        result = runner.invoke(main, ["--config", cli_env["config"], "refresh", "--dry-run"])
+        assert result.exit_code == 0
+        assert not os.path.exists(cli_env["out"])
+
+    def test_refresh_unknown_profile_exits_1(self, runner, cli_env):
+        result = runner.invoke(
+            main, ["--config", cli_env["config"], "refresh", "no-such-profile"]
+        )
+        assert result.exit_code == 1
+
+    def test_refresh_output_mentions_building(self, runner, cli_env):
+        result = runner.invoke(main, ["--config", cli_env["config"], "refresh"])
+        assert "Building profile" in result.output
+
+    def test_refresh_no_crls_skips_crl_step(self, runner, cli_env):
+        """Without include_crls, refresh should not mention CRL fetching."""
+        result = runner.invoke(main, ["--config", cli_env["config"], "refresh"])
+        assert result.exit_code == 0
+        assert "Fetching CRLs" not in result.output
+
+    def test_refresh_crl_failure_does_not_block_build(self, runner, tmp_path, ca_pem):
+        """A CRL fetch exception must be a warning; the build still runs."""
+        from unittest.mock import patch
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ca.pem").write_bytes(ca_pem)
+        out = tmp_path / "out"
+        cfg = tmp_path / "crab.yaml"
+        cfg.write_text(
+            "version: 1\n"
+            "sources:\n"
+            "  s:\n"
+            "    type: local\n"
+            "    path: {src}\n"
+            "profiles:\n"
+            "  p:\n"
+            "    sources: [s]\n"
+            "    output_path: {out}\n"
+            "    atomic: false\n"
+            "    rehash: builtin\n"
+            "    include_crls: true\n"
+            "    crl:\n"
+            "      output_dir: {out}\n".format(src=str(src), out=str(out))
+        )
+        with patch("certbundle.cli.CRLManager") as mock_crl:
+            mock_crl.return_value.update_crls.side_effect = IOError("network error")
+            result = runner.invoke(main, ["--config", str(cfg), "refresh"])
+
+        # Build must succeed despite CRL failure
+        assert result.exit_code == 0
+        assert os.path.isdir(str(out))
+        assert "WARNING" in result.output or "warning" in result.output.lower()
+
+    def test_refresh_with_report_flag(self, runner, cli_env):
+        result = runner.invoke(
+            main, ["--config", cli_env["config"], "refresh", "--report"]
+        )
+        assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
 # Global options
 # ---------------------------------------------------------------------------
 

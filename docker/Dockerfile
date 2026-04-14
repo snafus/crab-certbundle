@@ -16,7 +16,7 @@
 #
 # Loop (daemon — refresh every hour):
 #   docker run -d \
-#     -e CRABCTL_COMMANDS=fetch-crls,build \
+#     -e CRABCTL_COMMANDS=refresh \
 #     -e CRABCTL_LOOP_INTERVAL=3600 \
 #     -v /etc/certbundle/config.yaml:/etc/certbundle/config.yaml:ro \
 #     -v certbundle-output:/var/lib/certbundle \
@@ -100,7 +100,7 @@ VOLUME ["/var/lib/certbundle", "/var/cache/certbundle"]
 
 # Defaults — all overridable at runtime (-e / environment:).
 ENV CRABCTL_CONFIG=/etc/certbundle/config.yaml \
-    CRABCTL_COMMANDS=build \
+    CRABCTL_COMMANDS=refresh \
     CRABCTL_LOOP_INTERVAL=0
 
 USER certbundle
