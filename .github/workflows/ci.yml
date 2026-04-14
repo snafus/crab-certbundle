@@ -168,13 +168,13 @@ jobs:
           VERSION=$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('setup.cfg'); print(c['metadata']['version'])")
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          git archive --prefix=crab-crab-${VERSION}/ HEAD \
-            | gzip > rpmbuild/SOURCES/crab-crab-${VERSION}.tar.gz
-          cp packaging/rpm/crab-crab.spec rpmbuild/SPECS/
+          git archive --prefix=crab-certbundle-${VERSION}/ HEAD \
+            | gzip > rpmbuild/SOURCES/crab-certbundle-${VERSION}.tar.gz
+          cp packaging/rpm/crab-certbundle.spec rpmbuild/SPECS/
 
       - name: Build RPM
         run: |
-          rpmbuild -ba rpmbuild/SPECS/crab-crab.spec \
+          rpmbuild -ba rpmbuild/SPECS/crab-certbundle.spec \
             --define "_topdir $(pwd)/rpmbuild"
 
       - name: Locate built RPMs
@@ -215,13 +215,13 @@ jobs:
           VERSION=$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('setup.cfg'); print(c['metadata']['version'])")
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          git archive --prefix=crab-crab-${VERSION}/ HEAD \
-            | gzip > rpmbuild/SOURCES/crab-crab-${VERSION}.tar.gz
-          cp packaging/rpm/crab-crab.spec rpmbuild/SPECS/
+          git archive --prefix=crab-certbundle-${VERSION}/ HEAD \
+            | gzip > rpmbuild/SOURCES/crab-certbundle-${VERSION}.tar.gz
+          cp packaging/rpm/crab-certbundle.spec rpmbuild/SPECS/
 
       - name: Build RPM
         run: |
-          rpmbuild -ba rpmbuild/SPECS/crab-crab.spec \
+          rpmbuild -ba rpmbuild/SPECS/crab-certbundle.spec \
             --define "_topdir $(pwd)/rpmbuild"
 
       - name: Locate built RPMs

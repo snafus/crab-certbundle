@@ -4,8 +4,8 @@
 #
 # Environment variables
 # ---------------------
-# CRABCTL_CONFIG        Path to the certbundle config file.
-#                       Default: /etc/certbundle/config.yaml
+# CRABCTL_CONFIG        Path to the crab config file.
+#                       Default: /etc/crab/config.yaml
 #
 # CRABCTL_COMMANDS      Comma-separated list of crabctl subcommands to run each
 #                       cycle, in order.
@@ -23,7 +23,7 @@
 
 set -e
 
-CONFIG="${CRABCTL_CONFIG:-/etc/certbundle/config.yaml}"
+CONFIG="${CRABCTL_CONFIG:-/etc/crab/config.yaml}"
 COMMANDS="${CRABCTL_COMMANDS:-build}"
 INTERVAL="${CRABCTL_LOOP_INTERVAL:-0}"
 
@@ -31,7 +31,7 @@ INTERVAL="${CRABCTL_LOOP_INTERVAL:-0}"
 _passthrough="$*"
 
 log() {
-    printf '[certbundle] %s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
+    printf '[crab] %s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
 }
 
 # Run every command in $COMMANDS against the configured config file.

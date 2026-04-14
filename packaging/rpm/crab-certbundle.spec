@@ -114,7 +114,7 @@ python3 -m pip install \
     "click>=7.0" \
     "requests>=2.20"
 
-# Step 2: install certbundle package itself (deps already above)
+# Step 2: install crab package itself (deps already above)
 python3 -m pip install \
     --no-cache-dir \
     --no-deps \
@@ -131,15 +131,15 @@ cat > %{buildroot}%{_bindir}/crabctl << 'WRAPPER'
 #!/usr/bin/python3
 import sys
 sys.path.insert(0, '/usr/share/crab-certbundle/vendor')
-from certbundle.cli import main
+from crab.cli import main
 main()
 WRAPPER
 chmod 0755 %{buildroot}%{_bindir}/crabctl
 
 # ── systemd units ─────────────────────────────────────────────────────────
 install -d %{buildroot}%{_unitdir}
-install -m 0644 systemd/certbundle.service %{buildroot}%{_unitdir}/crabctl.service
-install -m 0644 systemd/certbundle.timer   %{buildroot}%{_unitdir}/crabctl.timer
+install -m 0644 systemd/crab.service %{buildroot}%{_unitdir}/crabctl.service
+install -m 0644 systemd/crab.timer   %{buildroot}%{_unitdir}/crabctl.timer
 
 # ── Config skeleton ───────────────────────────────────────────────────────
 # The directory is owned by the package; the config file is created by the

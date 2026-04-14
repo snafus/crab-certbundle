@@ -1,27 +1,27 @@
 # =============================================================================
-# crab-certbundle — production container image
+# crab — production container image
 #
 # Multi-stage build: dependencies compiled in a builder layer; only the venv,
 # the openssl binary, and ca-certificates land in the final image.
 #
 # Build:
-#   docker build -f docker/Dockerfile -t crab-certbundle:latest .
+#   docker build -f docker/Dockerfile -t crab:latest .
 #
 # One-shot (run once then exit — use with CronJob / systemd timer):
 #   docker run --rm \
-#     -v /etc/certbundle/config.yaml:/etc/certbundle/config.yaml:ro \
-#     -v certbundle-output:/var/lib/certbundle \
-#     -v certbundle-cache:/var/cache/certbundle \
-#     crab-certbundle:latest
+#     -v /etc/crab/config.yaml:/etc/crab/config.yaml:ro \
+#     -v crab-output:/var/lib/crab \
+#     -v crab-cache:/var/cache/crab \
+#     crab:latest
 #
 # Loop (daemon — refresh every hour):
 #   docker run -d \
 #     -e CRABCTL_COMMANDS=refresh \
 #     -e CRABCTL_LOOP_INTERVAL=3600 \
-#     -v /etc/certbundle/config.yaml:/etc/certbundle/config.yaml:ro \
-#     -v certbundle-output:/var/lib/certbundle \
-#     -v certbundle-cache:/var/cache/certbundle \
-#     crab-certbundle:latest
+#     -v /etc/crab/config.yaml:/etc/crab/config.yaml:ro \
+#     -v crab-output:/var/lib/crab \
+#     -v crab-cache:/var/cache/crab \
+#     crab:latest
 # =============================================================================
 
 
@@ -48,7 +48,7 @@ RUN pip install --no-cache-dir --upgrade pip
 # Copy packaging metadata first so the dependency install layer is cached
 # independently of source edits.
 COPY setup.cfg setup.py pyproject.toml ./
-COPY certbundle/ certbundle/
+COPY crab/ crab/
 
 # Install with the [openssl] extra so pyOpenSSL is available for the fastest
 # and most correct rehash strategy (falls back to subprocess / pure-Python if
@@ -64,7 +64,7 @@ RUN pip install --no-cache-dir ".[openssl]"
 # -----------------------------------------------------------------------------
 FROM python:3.11-slim-bookworm AS runtime
 
-LABEL org.opencontainers.image.title="crab-certbundle" \
+LABEL org.opencontainers.image.title="crab" \
       org.opencontainers.image.description="IGTF/X.509 CA bundle builder and refresher" \
       org.opencontainers.image.source="https://github.com/snafus/crab-certbundle" \
       org.opencontainers.image.licenses="Apache-2.0"
@@ -81,30 +81,30 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Non-root user; uid/gid 999 avoids conflicts with common system accounts.
-RUN groupadd -r -g 999 certbundle \
-    && useradd -r -u 999 -g certbundle -s /usr/sbin/nologin \
-               -d /var/lib/certbundle certbundle
+RUN groupadd -r -g 999 crab \
+    && useradd -r -u 999 -g crab -s /usr/sbin/nologin \
+               -d /var/lib/crab crab
 
 # Create expected mount points.
-# /etc/certbundle  — config (mounted read-only by the operator; no chown needed)
-# /var/lib/certbundle — output CApath dirs / bundle files (read-write)
-# /var/cache/certbundle — IGTF tarball cache + CRL cache (read-write)
-RUN mkdir -p /etc/certbundle /var/lib/certbundle /var/cache/certbundle \
-    && chown certbundle:certbundle /var/lib/certbundle /var/cache/certbundle
+# /etc/crab        — config (mounted read-only by the operator; no chown needed)
+# /var/lib/crab    — output CApath dirs / bundle files (read-write)
+# /var/cache/crab  — IGTF tarball cache + CRL cache (read-write)
+RUN mkdir -p /etc/crab /var/lib/crab /var/cache/crab \
+    && chown crab:crab /var/lib/crab /var/cache/crab
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
 
 # Declare volumes so named volumes / PVCs are created automatically.
-VOLUME ["/var/lib/certbundle", "/var/cache/certbundle"]
+VOLUME ["/var/lib/crab", "/var/cache/crab"]
 
 # Defaults — all overridable at runtime (-e / environment:).
-ENV CRABCTL_CONFIG=/etc/certbundle/config.yaml \
+ENV CRABCTL_CONFIG=/etc/crab/config.yaml \
     CRABCTL_COMMANDS=refresh \
     CRABCTL_LOOP_INTERVAL=0
 
-USER certbundle
-WORKDIR /var/lib/certbundle
+USER crab
+WORKDIR /var/lib/crab
 
 ENTRYPOINT ["/entrypoint.sh"]
 # Docker CMD args are forwarded to every subcommand (e.g. --dry-run).
