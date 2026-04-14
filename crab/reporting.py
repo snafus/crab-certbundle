@@ -1,7 +1,7 @@
 """
 Diff and reporting utilities.
 
-Compares two sets of :class:`~certbundle.cert.CertificateInfo` objects (e.g.
+Compares two sets of :class:`~crab.cert.CertificateInfo` objects (e.g.
 the current directory and the newly built one) and produces human-readable or
 machine-readable reports describing what changed.
 """
@@ -11,7 +11,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from certbundle.cert import CertificateInfo
+from crab.cert import CertificateInfo
 
 logger = logging.getLogger(__name__)
 

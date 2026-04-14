@@ -24,7 +24,7 @@ String values in the config may reference environment variables using
       igtf-online:
         type: igtf
         url: "${IGTF_URL}"
-        cache_dir: "${CACHE_DIR:-/var/cache/certbundle}"
+        cache_dir: "${CACHE_DIR:-/var/cache/crab}"
 
 Rules:
 
@@ -235,7 +235,7 @@ class ProfileConfig:
 
     def as_output_profile_dict(self):
         # type: () -> dict
-        """Return a dict suitable for constructing an :class:`~certbundle.output.OutputProfile`."""
+        """Return a dict suitable for constructing an :class:`~crab.output.OutputProfile`."""
         return {
             "output_path": self.output_path,
             "staging_path": self.staging_path,
@@ -258,7 +258,7 @@ class ProfileConfig:
 
 class Config:
     """
-    Fully parsed and validated certbundle configuration.
+    Fully parsed and validated crab configuration.
 
     Attributes:
         sources   Dict of source name → :class:`SourceConfig`.
@@ -387,9 +387,9 @@ def _check_staging_device(output_path, staging_path, profile_name):
 def _get_type_map():
     # type: () -> dict
     # Deferred import to avoid circular imports at module load time.
-    from certbundle.sources.igtf import IGTFSource
-    from certbundle.sources.local import LocalSource
-    from certbundle.sources.system import SystemSource
+    from crab.sources.igtf import IGTFSource
+    from crab.sources.local import LocalSource
+    from crab.sources.system import SystemSource
     return {
         "igtf": IGTFSource,
         "local": LocalSource,
@@ -400,7 +400,7 @@ def _get_type_map():
 def build_source(source_config):
     # type: (SourceConfig) -> Any
     """
-    Instantiate the appropriate :class:`~certbundle.sources.base.CertificateSource`
+    Instantiate the appropriate :class:`~crab.sources.base.CertificateSource`
     subclass for *source_config*.
     """
     cls = _get_type_map()[source_config.type]

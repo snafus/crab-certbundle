@@ -258,7 +258,7 @@ See `systemd/README.md` for full installation instructions.
 pytest -v
 
 # With coverage
-pytest --cov=certbundle --cov-report=term-missing
+pytest --cov=crab --cov-report=term-missing
 
 # In a Rocky 8 container
 docker build -t crab-test .

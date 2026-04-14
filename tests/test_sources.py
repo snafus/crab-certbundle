@@ -5,8 +5,8 @@ import tarfile
 import io
 import pytest
 
-from certbundle.sources.local import LocalSource
-from certbundle.sources.igtf import IGTFSource, _parse_info_file
+from crab.sources.local import LocalSource
+from crab.sources.igtf import IGTFSource, _parse_info_file
 
 
 class TestLocalSource:
@@ -154,7 +154,7 @@ class TestParseInfoFile:
 # ---------------------------------------------------------------------------
 
 from unittest.mock import patch
-from certbundle.sources.system import SystemSource, _find_system_bundle, _CANDIDATE_PATHS
+from crab.sources.system import SystemSource, _find_system_bundle, _CANDIDATE_PATHS
 
 
 class TestSystemSource:
@@ -185,7 +185,7 @@ class TestSystemSource:
     def test_auto_detection_uses_first_candidate(self, tmp_path, ca_pem):
         bundle = tmp_path / "ca-bundle.pem"
         bundle.write_bytes(ca_pem)
-        with patch("certbundle.sources.system._CANDIDATE_PATHS", [str(bundle)]):
+        with patch("crab.sources.system._CANDIDATE_PATHS", [str(bundle)]):
             src = SystemSource("test", {})
             result = src.load()
         assert len(result.certificates) == 1
@@ -195,14 +195,14 @@ class TestSystemSource:
         missing = str(tmp_path / "missing.pem")
         present = tmp_path / "present.pem"
         present.write_bytes(ca_pem)
-        with patch("certbundle.sources.system._CANDIDATE_PATHS",
+        with patch("crab.sources.system._CANDIDATE_PATHS",
                    [missing, str(present)]):
             src = SystemSource("test", {})
             result = src.load()
         assert len(result.certificates) == 1
 
     def test_no_candidates_found_returns_error(self):
-        with patch("certbundle.sources.system._CANDIDATE_PATHS", []):
+        with patch("crab.sources.system._CANDIDATE_PATHS", []):
             src = SystemSource("test", {})
             result = src.load()
         assert result.errors
@@ -239,13 +239,13 @@ class TestFindSystemBundle:
         p1 = str(tmp_path / "missing.pem")
         p2 = tmp_path / "found.pem"
         p2.write_bytes(ca_pem)
-        with patch("certbundle.sources.system._CANDIDATE_PATHS", [p1, str(p2)]):
+        with patch("crab.sources.system._CANDIDATE_PATHS", [p1, str(p2)]):
             assert _find_system_bundle() == str(p2)
 
     def test_returns_none_when_nothing_found(self):
-        with patch("certbundle.sources.system._CANDIDATE_PATHS", ["/no/such/path"]):
+        with patch("crab.sources.system._CANDIDATE_PATHS", ["/no/such/path"]):
             assert _find_system_bundle() is None
 
     def test_returns_none_for_empty_candidate_list(self):
-        with patch("certbundle.sources.system._CANDIDATE_PATHS", []):
+        with patch("crab.sources.system._CANDIDATE_PATHS", []):
             assert _find_system_bundle() is None

@@ -1,11 +1,11 @@
-"""Tests for certbundle.crl — CRL manager and helpers."""
+"""Tests for crab.crl — CRL manager and helpers."""
 
 import os
 import pytest
 from unittest.mock import patch, MagicMock
 
-from certbundle.cert import parse_pem_data
-from certbundle.crl import (
+from crab.cert import parse_pem_data
+from crab.crl import (
     CRLInfo,
     CRLManager,
     CRLUpdateResult,
@@ -99,7 +99,7 @@ class TestCRLManagerConstruction:
 
     def test_tls_verify_false_warns(self, tmp_path, caplog):
         import logging
-        with caplog.at_level(logging.WARNING, logger="certbundle.crl"):
+        with caplog.at_level(logging.WARNING, logger="crab.crl"):
             CRLManager({"verify_tls": False}, str(tmp_path))
         assert any("TLS verification is DISABLED" in r.message for r in caplog.records)
 
@@ -353,7 +353,7 @@ class TestValidateCrls:
 
     def test_warns_when_crl_expired(self, tmp_path, ca_pem):
         from unittest.mock import patch
-        from certbundle.crl import CRLInfo
+        from crab.crl import CRLInfo
         certs = parse_pem_data(ca_pem)
         mgr = CRLManager({}, str(tmp_path))
         # Plant a CRL file so _find_crl_file finds it
@@ -367,14 +367,14 @@ class TestValidateCrls:
             next_update=datetime(2020, 1, 2, tzinfo=timezone.utc),
             file_path=str(tmp_path / (issuer_hash + ".r0")),
         )
-        with patch("certbundle.crl._parse_crl_file", return_value=expired_info):
+        with patch("crab.crl._parse_crl_file", return_value=expired_info):
             warnings = mgr.validate_crls(certs)
         assert any("Expired CRL" in w for w in warnings)
 
     def test_warns_when_crl_stale(self, tmp_path, ca_pem):
         from unittest.mock import patch
         from datetime import timedelta
-        from certbundle.crl import CRLInfo
+        from crab.crl import CRLInfo
         certs = parse_pem_data(ca_pem)
         mgr = CRLManager({"max_age_hours": 1}, str(tmp_path))
         issuer_hash = mgr._get_issuer_hash(certs[0])
@@ -386,7 +386,7 @@ class TestValidateCrls:
             next_update=datetime.now(timezone.utc) + timedelta(hours=1),
             file_path=str(tmp_path / (issuer_hash + ".r0")),
         )
-        with patch("certbundle.crl._parse_crl_file", return_value=stale_info):
+        with patch("crab.crl._parse_crl_file", return_value=stale_info):
             warnings = mgr.validate_crls(certs)
         assert any("Stale CRL" in w for w in warnings)
 
@@ -396,7 +396,7 @@ class TestValidateCrls:
         mgr = CRLManager({}, str(tmp_path))
         issuer_hash = mgr._get_issuer_hash(certs[0])
         (tmp_path / (issuer_hash + ".r0")).write_bytes(_FAKE_PEM_CRL)
-        with patch("certbundle.crl._parse_crl_file", side_effect=IOError("bad CRL")):
+        with patch("crab.crl._parse_crl_file", side_effect=IOError("bad CRL")):
             warnings = mgr.validate_crls(certs)
         assert any("Cannot parse CRL" in w for w in warnings)
 
@@ -462,7 +462,7 @@ class TestFetchCrl:
         """_fetch_crl delegates to download_to_bytes."""
         mgr = CRLManager({}, str(tmp_path))
         fake_data = b"CRL data"
-        with patch("certbundle.sources.http.download_to_bytes", return_value=fake_data) as mock:
+        with patch("crab.sources.http.download_to_bytes", return_value=fake_data) as mock:
             result = mgr._fetch_crl("https://example.com/test.crl")
         assert result == fake_data
         assert mock.call_count == 1
@@ -470,7 +470,7 @@ class TestFetchCrl:
     def test_fetch_crl_passes_verify_tls(self, tmp_path):
         """verify_tls from config is forwarded to download_to_bytes."""
         mgr = CRLManager({"verify_tls": False}, str(tmp_path))
-        with patch("certbundle.sources.http.download_to_bytes", return_value=b"data") as mock:
+        with patch("crab.sources.http.download_to_bytes", return_value=b"data") as mock:
             mgr._fetch_crl("https://example.com/test.crl")
         _, kwargs = mock.call_args
         assert kwargs.get("verify_tls") is False

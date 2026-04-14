@@ -23,7 +23,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `cache_pinned` config key (default: false) — when true, the cached copy is
   returned immediately without any network request; useful for air-gapped
   deployments or reproducible builds locked to a specific IGTF version.
-- `download_with_cache` in `certbundle.sources.http` now exposes
+- `download_with_cache` in `crab.sources.http` now exposes
   `cache_ttl_days` and `cache_pinned` parameters.
 - `_evict_stale_cache` helper function to clean up superseded `.tar.gz` /
   `.meta` file pairs from the cache directory.
@@ -43,36 +43,36 @@ Initial public release.
 ### Added
 
 **Core pipeline**
-- `certbundle.cert` — `CertificateInfo` data model with full X.509 attribute
+- `crab.cert` — `CertificateInfo` data model with full X.509 attribute
   extraction (subject, issuer, fingerprints, key usage, EKU, CDP, AIA,
   BasicConstraints, validity); bundle parsing via PEM regex unwrapping.
-- `certbundle.rehash` — OpenSSL subject-hash computation with three-tier
+- `crab.rehash` — OpenSSL subject-hash computation with three-tier
   fallback: pyOpenSSL (C library, guaranteed correct) → subprocess
   `openssl x509 -hash` → pure-Python SHA-1 / DER-walk fallback; shared
   `CERT_HASH_FILE_RE` / `CRL_HASH_FILE_RE` regex constants.
-- `certbundle.policy` — `PolicyEngine` with structural (CA flag, pathLen),
+- `crab.policy` — `PolicyEngine` with structural (CA flag, pathLen),
   validity, EKU, include/exclude rule support; per-rule AND semantics,
   across-rules OR semantics; INFO-level rejection summary.
-- `certbundle.output` — `OutputProfile`, `build_output` with atomic staging
+- `crab.output` — `OutputProfile`, `build_output` with atomic staging
   + rename; IGTF metadata passthrough; configurable file/dir permissions;
   symlink-target safety guard.
-- `certbundle.crl` — `CRLManager` with CDP + IGTF `.info` URL discovery;
+- `crab.crl` — `CRLManager` with CDP + IGTF `.info` URL discovery;
   DER→PEM conversion; atomic temp-file write; issuer-hash format validation;
   freshness and expiry checks.
-- `certbundle.validation` — `validate_directory`; hash filename consistency
+- `crab.validation` — `validate_directory`; hash filename consistency
   check; expired cert warnings; optional `openssl verify` smoke test.
-- `certbundle.reporting` — `diff_cert_sets`; `render_diff_text` /
+- `crab.reporting` — `diff_cert_sets`; `render_diff_text` /
   `render_diff_json`; `render_inventory` (text + JSON); source load report.
-- `certbundle.config` — YAML config loading and validation; source factory;
+- `crab.config` — YAML config loading and validation; source factory;
   `ConfigError` with actionable messages.
 
 **Source loaders**
-- `certbundle.sources.igtf` — local directory, local tarball, HTTP URL;
+- `crab.sources.igtf` — local directory, local tarball, HTTP URL;
   `.info` / `.signing_policy` / `.namespaces` / `.crl_url` passthrough;
   IGTF policy-tag filtering; tarball path-traversal protection.
-- `certbundle.sources.local` — single PEM file, bundle file, directory with
+- `crab.sources.local` — single PEM file, bundle file, directory with
   glob patterns; optional recursive walk.
-- `certbundle.sources.http` — HTTP/HTTPS download with retry and backoff;
+- `crab.sources.http` — HTTP/HTTPS download with retry and backoff;
   scheme validation (rejects `file://`, `ftp://`, etc.); size cap.
 
 **CLI** (`crabctl` entry point)
@@ -89,7 +89,7 @@ Initial public release.
 - `setup.cfg` + `setup.py` + `pyproject.toml` for pip-installable package
 - `tox.ini` targeting Python 3.6–3.11
 - `Dockerfile` (Rocky Linux 8 base for EL-compatible testing)
-- `systemd/certbundle.service` + `certbundle.timer` (daily 04:00, 30 min jitter)
+- `systemd/crab.service` + `crab.timer` (daily 04:00, 30 min jitter)
 - Example configs: `config-full.yaml`, `config-minimal.yaml`, `config-srcnet.yaml`
 - `docs/ARCHITECTURE.md` covering pipeline, hash strategy, atomic swap,
   policy model, IGTF integration, Python 3.6 compatibility, security notes
@@ -126,7 +126,7 @@ Initial public release.
   `int("0o644", 8)` which raises `ValueError`; simplified to `int(value)`.
 - `ValidationIssue` used a bare `assert` for level validation, silently
   bypassed under `python -O`; replaced with explicit `raise ValueError`.
-- `systemd/certbundle.service` `ExecStart` path was `/usr/local/bin/crabctl`
+- `systemd/crab.service` `ExecStart` path was `/usr/local/bin/crabctl`
   but the RPM installs to `/usr/bin/crabctl`.
 - RPM spec: EL8 system pip (9.0.3) does not support `--prefer-binary`; added
   pip self-upgrade step in `%install` before vendoring.
@@ -158,5 +158,5 @@ Initial public release.
 
 ---
 
-[Unreleased]: https://github.com/snafus/crab-certbundle/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/snafus/crab-certbundle/releases/tag/v0.1.0
+[Unreleased]: https://github.com/snafus/crab-crab/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/snafus/crab-crab/releases/tag/v0.1.0

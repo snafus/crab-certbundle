@@ -208,9 +208,9 @@ def igtf_dir(tmp_path, ca_pem):
 
 @pytest.fixture()
 def minimal_config_file(tmp_path, pem_dir):
-    """Write a minimal certbundle.yaml config to tmp_path."""
+    """Write a minimal crab.yaml config to tmp_path."""
     output_path = str(tmp_path / "output")
-    config_path = str(tmp_path / "certbundle.yaml")
+    config_path = str(tmp_path / "crab.yaml")
     with open(config_path, "w") as fh:
         fh.write(
             "version: 1\n"

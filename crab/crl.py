@@ -204,12 +204,12 @@ class CRLManager:
 
     def _get_issuer_hash(self, ci):
         # type: (...) -> str
-        from certbundle.rehash import compute_issuer_hash
+        from crab.rehash import compute_issuer_hash
         return compute_issuer_hash(ci)
 
     def _fetch_crl(self, url):
         # type: (str) -> bytes
-        from certbundle.sources.http import download_to_bytes
+        from crab.sources.http import download_to_bytes
         return download_to_bytes(url, verify_tls=self.verify_tls,
                                  timeout=(10, self.timeout))
 

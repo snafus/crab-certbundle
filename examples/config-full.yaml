@@ -1,5 +1,5 @@
 ##
-## certbundle — full annotated configuration reference
+## crab — full annotated configuration reference
 ## Copy this file and remove/edit sections you don't need.
 ##
 
@@ -23,7 +23,7 @@ sources:
   # IGTF trust anchors from a downloaded tarball
   igtf-classic-tarball:
     type: igtf
-    tarball: /var/cache/certbundle/igtf-preinstalled-bundle-classic-1.120.tar.gz
+    tarball: /var/cache/crab/igtf-preinstalled-bundle-classic-1.120.tar.gz
     policies:
       - classic
 
@@ -31,11 +31,11 @@ sources:
   # Note: the URL must point to a .tar.gz file.
   # String values support ${VAR} and ${VAR:-default} environment variable
   # interpolation, making container deployments easier:
-  #   cache_dir: "${CACHE_DIR:-/var/cache/certbundle}"
+  #   cache_dir: "${CACHE_DIR:-/var/cache/crab}"
   igtf-online:
     type: igtf
     url: "https://dl.igtf.net/distribution/igtf/current/accredited/igtf-preinstalled-bundle-classic-1.120.tar.gz"
-    cache_dir: "${CERTBUNDLE_CACHE_DIR:-/var/cache/certbundle}"
+    cache_dir: "${CRAB_CACHE_DIR:-/var/cache/crab}"
 
   # Public CA roots from the OS trust store — auto-detected across EL,
   # Debian/Ubuntu, Alpine, macOS, and other common platforms.
@@ -65,7 +65,7 @@ profiles:
     sources:
       - igtf-classic-dir
     output_path: /etc/grid-security/certificates
-    staging_path: /var/lib/certbundle/staging/grid
+    staging_path: /var/lib/crab/staging/grid
 
     # Write atomically: stage in a temp directory, then rename into place.
     atomic: true
@@ -122,7 +122,7 @@ profiles:
       - system-roots
       - custom-public-roots
     output_path: /etc/crab/server-auth
-    staging_path: /var/lib/certbundle/staging/server-auth
+    staging_path: /var/lib/crab/staging/server-auth
     atomic: true
     rehash: auto
     include_igtf_meta: false
@@ -152,7 +152,7 @@ profiles:
       - igtf-classic-dir
       - system-roots
     output_path: /etc/crab/combined
-    staging_path: /var/lib/certbundle/staging/combined
+    staging_path: /var/lib/crab/staging/combined
     atomic: true
     rehash: auto
     include_igtf_meta: true
@@ -183,7 +183,7 @@ profiles:
 
 
 # ---------------------------------------------------------------------------
-# Refresh / scheduling hints (informational — not executed by certbundle itself)
+# Refresh / scheduling hints (informational — not executed by crab itself)
 # Used by the included systemd timer / cron examples.
 # ---------------------------------------------------------------------------
 refresh:
@@ -199,4 +199,4 @@ refresh:
 logging:
   level: INFO   # DEBUG, INFO, WARNING, ERROR
   # Uncomment to write logs to a file in addition to stderr:
-  # file: /var/log/certbundle.log
+  # file: /var/log/crab.log

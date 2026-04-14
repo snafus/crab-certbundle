@@ -30,8 +30,8 @@ import logging
 import os
 from typing import List, Optional
 
-from certbundle.cert import parse_pem_data
-from certbundle.sources.base import CertificateSource, SourceResult
+from crab.cert import parse_pem_data
+from crab.sources.base import CertificateSource, SourceResult
 
 logger = logging.getLogger(__name__)
 

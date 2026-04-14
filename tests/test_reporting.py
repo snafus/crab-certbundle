@@ -1,10 +1,10 @@
-"""Tests for certbundle.reporting — diff and inventory rendering."""
+"""Tests for crab.reporting — diff and inventory rendering."""
 
 import json
 import pytest
 
-from certbundle.cert import parse_pem_data
-from certbundle.reporting import (
+from crab.cert import parse_pem_data
+from crab.reporting import (
     diff_cert_sets,
     render_diff_text,
     render_diff_json,

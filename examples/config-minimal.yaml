@@ -1,4 +1,4 @@
-## certbundle — minimal working configuration
+## crab — minimal working configuration
 ## Loads IGTF certificates from an existing local directory.
 
 version: 1
@@ -11,7 +11,7 @@ sources:
 profiles:
   grid:
     sources: [igtf]
-    output_path: /tmp/certbundle-output
+    output_path: /tmp/crab-output
     atomic: true
     rehash: auto
     policy:

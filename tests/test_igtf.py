@@ -1,4 +1,4 @@
-"""Tests for certbundle.sources.igtf — tarball, URL, and directory loading."""
+"""Tests for crab.sources.igtf — tarball, URL, and directory loading."""
 
 import io
 import os
@@ -6,7 +6,7 @@ import tarfile as tarfile_mod
 import pytest
 from unittest.mock import patch
 
-from certbundle.sources.igtf import (
+from crab.sources.igtf import (
     IGTFSource,
     _load_tarball,
     _load_url,
@@ -132,20 +132,20 @@ class TestProcessTarfile:
 class TestLoadUrl:
     def test_download_success_returns_certs(self, ca_pem):
         tarball = _make_tarball([("test-ca.pem", ca_pem)])
-        with patch("certbundle.sources.igtf.download_with_cache", return_value=tarball):
+        with patch("crab.sources.igtf.download_with_cache", return_value=tarball):
             certs, _, _, errors = _load_url("http://example.com/b.tar.gz", "/tmp", "test")
         assert len(certs) == 1
         assert errors == []
 
     def test_download_failure_returns_error(self):
-        with patch("certbundle.sources.igtf.download_with_cache",
+        with patch("crab.sources.igtf.download_with_cache",
                    side_effect=IOError("network error")):
             _, _, _, errors = _load_url("http://example.com/b.tar.gz", "/tmp", "test")
         assert errors
         assert "Failed to download" in errors[0]
 
     def test_corrupt_tarball_bytes_returns_error(self):
-        with patch("certbundle.sources.igtf.download_with_cache",
+        with patch("crab.sources.igtf.download_with_cache",
                    return_value=b"not a tarball"):
             _, _, _, errors = _load_url("http://example.com/b.tar.gz", "/tmp", "test")
         assert errors
@@ -157,7 +157,7 @@ class TestLoadUrl:
             ("my-ca.pem", ca_pem),
             ("my-ca.info", info),
         ])
-        with patch("certbundle.sources.igtf.download_with_cache", return_value=tarball):
+        with patch("crab.sources.igtf.download_with_cache", return_value=tarball):
             certs, info_files, _, errors = _load_url(
                 "http://example.com/b.tar.gz", "/tmp", "test"
             )
@@ -186,7 +186,7 @@ class TestIGTFSourceLoad:
 
     def test_load_from_url(self, ca_pem):
         tarball = _make_tarball([("test-ca.pem", ca_pem)])
-        with patch("certbundle.sources.igtf.download_with_cache", return_value=tarball):
+        with patch("crab.sources.igtf.download_with_cache", return_value=tarball):
             source = IGTFSource("igtf", {"url": "http://example.com/b.tar.gz"})
             result = source.load()
         assert len(result.certificates) == 1
@@ -209,7 +209,7 @@ class TestIGTFSourceLoad:
             ("test-ca.pem", ca_pem),
             ("test-ca.info", info),
         ])
-        with patch("certbundle.sources.igtf.download_with_cache", return_value=tarball):
+        with patch("crab.sources.igtf.download_with_cache", return_value=tarball):
             source = IGTFSource("igtf", {
                 "url": "http://example.com/b.tar.gz",
                 "policies": ["classic"],
@@ -223,7 +223,7 @@ class TestIGTFSourceLoad:
             ("test-ca.pem", ca_pem),
             ("test-ca.info", info),
         ])
-        with patch("certbundle.sources.igtf.download_with_cache", return_value=tarball):
+        with patch("crab.sources.igtf.download_with_cache", return_value=tarball):
             source = IGTFSource("igtf", {
                 "url": "http://example.com/b.tar.gz",
                 "policies": ["classic"],
@@ -247,7 +247,7 @@ class TestIGTFSourceLoad:
 class TestLoadDirectory:
     def test_subdirectory_skipped(self, ca_pem, tmp_path):
         """Non-file entries (subdirs) in the IGTF directory are skipped silently."""
-        from certbundle.sources.igtf import _load_directory
+        from crab.sources.igtf import _load_directory
         (tmp_path / "sub").mkdir()
         (tmp_path / "test-ca.pem").write_bytes(ca_pem)
         certs, _, _, errors = _load_directory(str(tmp_path), "test")
@@ -256,7 +256,7 @@ class TestLoadDirectory:
 
     def test_unreadable_file_recorded_as_error(self, ca_pem, tmp_path):
         """A file whose open() raises is captured as an error, not a crash."""
-        from certbundle.sources.igtf import _load_directory
+        from crab.sources.igtf import _load_directory
         (tmp_path / "aaa-good.pem").write_bytes(ca_pem)
         (tmp_path / "zzz-bad.pem").write_bytes(ca_pem)
 

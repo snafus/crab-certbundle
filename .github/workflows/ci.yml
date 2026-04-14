@@ -48,7 +48,7 @@ jobs:
       - name: Run tests
         run: |
           python3 -m pytest tests/ -v --tb=short \
-            --cov=certbundle --cov-report=term-missing
+            --cov=crab --cov-report=term-missing
 
   # ── Rocky Linux 9 — system Python 3.9 + latest (3.12) ────────────────────
   rocky9:
@@ -119,7 +119,7 @@ jobs:
       - name: Run tests
         run: |
           ${{ steps.py.outputs.bin }} -m pytest tests/ -v --tb=short \
-            --cov=certbundle --cov-report=term-missing
+            --cov=crab --cov-report=term-missing
 
   # ── Docker build validation (no push) ────────────────────────────────────
   docker:
@@ -168,13 +168,13 @@ jobs:
           VERSION=$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('setup.cfg'); print(c['metadata']['version'])")
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          git archive --prefix=crab-certbundle-${VERSION}/ HEAD \
-            | gzip > rpmbuild/SOURCES/crab-certbundle-${VERSION}.tar.gz
-          cp packaging/rpm/crab-certbundle.spec rpmbuild/SPECS/
+          git archive --prefix=crab-crab-${VERSION}/ HEAD \
+            | gzip > rpmbuild/SOURCES/crab-crab-${VERSION}.tar.gz
+          cp packaging/rpm/crab-crab.spec rpmbuild/SPECS/
 
       - name: Build RPM
         run: |
-          rpmbuild -ba rpmbuild/SPECS/crab-certbundle.spec \
+          rpmbuild -ba rpmbuild/SPECS/crab-crab.spec \
             --define "_topdir $(pwd)/rpmbuild"
 
       - name: Locate built RPMs
@@ -215,13 +215,13 @@ jobs:
           VERSION=$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('setup.cfg'); print(c['metadata']['version'])")
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          git archive --prefix=crab-certbundle-${VERSION}/ HEAD \
-            | gzip > rpmbuild/SOURCES/crab-certbundle-${VERSION}.tar.gz
-          cp packaging/rpm/crab-certbundle.spec rpmbuild/SPECS/
+          git archive --prefix=crab-crab-${VERSION}/ HEAD \
+            | gzip > rpmbuild/SOURCES/crab-crab-${VERSION}.tar.gz
+          cp packaging/rpm/crab-crab.spec rpmbuild/SPECS/
 
       - name: Build RPM
         run: |
-          rpmbuild -ba rpmbuild/SPECS/crab-certbundle.spec \
+          rpmbuild -ba rpmbuild/SPECS/crab-crab.spec \
             --define "_topdir $(pwd)/rpmbuild"
 
       - name: Locate built RPMs

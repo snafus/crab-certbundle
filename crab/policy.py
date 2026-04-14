@@ -21,7 +21,7 @@ import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from certbundle.cert import CertificateInfo
+from crab.cert import CertificateInfo
 
 logger = logging.getLogger(__name__)
 

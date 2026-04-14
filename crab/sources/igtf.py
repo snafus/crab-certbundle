@@ -30,9 +30,9 @@ import tarfile
 import tempfile
 from typing import Dict, List, Optional, Tuple
 
-from certbundle.cert import CertificateInfo, parse_pem_data
-from certbundle.sources.base import CertificateSource, SourceResult
-from certbundle.sources.http import download_with_cache
+from crab.cert import CertificateInfo, parse_pem_data
+from crab.sources.base import CertificateSource, SourceResult
+from crab.sources.http import download_with_cache
 
 logger = logging.getLogger(__name__)
 

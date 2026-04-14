@@ -81,7 +81,7 @@ def compute_issuer_hash(cert_info):
 def build_symlink_map(cert_infos):
     # type: (List) -> Dict[str, bytes]
     """
-    Given a list of :class:`~certbundle.cert.CertificateInfo` objects, return
+    Given a list of :class:`~crab.cert.CertificateInfo` objects, return
     a mapping of ``filename → pem_data`` suitable for writing to a CApath
     directory.
 

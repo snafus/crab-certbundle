@@ -1,13 +1,13 @@
-"""Tests for certbundle.validation — output directory checks."""
+"""Tests for crab.validation — output directory checks."""
 
 import os
 import re
 import pytest
 from unittest.mock import patch, MagicMock
 
-from certbundle.cert import parse_pem_data
-from certbundle.output import OutputProfile, build_output
-from certbundle.validation import (
+from crab.cert import parse_pem_data
+from crab.output import OutputProfile, build_output
+from crab.validation import (
     validate_directory,
     has_errors,
     has_warnings,
@@ -135,8 +135,8 @@ class TestHashMismatch:
 class TestMultiCertFile:
     def test_warns_when_file_contains_two_certs(self, tmp_path, ca_pem, second_ca_pem):
         """A CApath file should contain exactly one certificate."""
-        from certbundle.cert import parse_pem_data
-        from certbundle.rehash import compute_subject_hash
+        from crab.cert import parse_pem_data
+        from crab.rehash import compute_subject_hash
         certs = parse_pem_data(ca_pem)
         hash0 = compute_subject_hash(certs[0])
         bundle = ca_pem + b"\n" + second_ca_pem
@@ -256,7 +256,7 @@ class TestValidateCertFileParsing:
         """parse_pem_file raising an exception produces a 'Cannot parse' error."""
         cert_file = str(tmp_path / "a1b2c3d4.0")
         open(cert_file, "wb").write(b"dummy")
-        with patch("certbundle.validation.parse_pem_file", side_effect=ValueError("bad cert")):
+        with patch("crab.validation.parse_pem_file", side_effect=ValueError("bad cert")):
             issues = _validate_cert_file("a1b2c3d4.0", cert_file, {}, {}, check_hashes=False)
         assert any(i.level == "error" and "Cannot parse" in i.message for i in issues)
 
@@ -276,8 +276,8 @@ class TestValidateCertFileParsing:
 class TestDuplicateFingerprint:
     def test_duplicate_fingerprint_across_files_warns(self, tmp_path, ca_pem):
         """The same cert in two files should produce a duplicate warning."""
-        from certbundle.cert import parse_pem_data
-        from certbundle.rehash import compute_subject_hash
+        from crab.cert import parse_pem_data
+        from crab.rehash import compute_subject_hash
         certs = parse_pem_data(ca_pem)
         h = compute_subject_hash(certs[0])
         # Write the same cert under two different collision-index filenames
@@ -295,8 +295,8 @@ class TestDuplicateFingerprint:
 class TestNonCACertWarning:
     def test_non_ca_cert_produces_warning(self, tmp_path, leaf_pem):
         """A leaf (non-CA) cert written into a CApath dir should warn."""
-        from certbundle.cert import parse_pem_data
-        from certbundle.rehash import compute_subject_hash
+        from crab.cert import parse_pem_data
+        from crab.rehash import compute_subject_hash
         certs = parse_pem_data(leaf_pem)
         h = compute_subject_hash(certs[0])
         (tmp_path / (h + ".0")).write_bytes(leaf_pem)

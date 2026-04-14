@@ -1,5 +1,5 @@
 """
-Tests for certbundle.sources.http — URL validation and download helpers.
+Tests for crab.sources.http — URL validation and download helpers.
 
 No real network access: all requests are mocked.
 """
@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock, call
 import json
 import time
 
-from certbundle.sources.http import (
+from crab.sources.http import (
     _validate_url,
     _cache_paths,
     _evict_stale_cache,

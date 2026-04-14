@@ -21,8 +21,8 @@ import re
 import subprocess
 from typing import List, Optional
 
-from certbundle.cert import parse_pem_file
-from certbundle.rehash import CERT_HASH_FILE_RE, CRL_HASH_FILE_RE
+from crab.cert import parse_pem_file
+from crab.rehash import CERT_HASH_FILE_RE, CRL_HASH_FILE_RE
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +175,7 @@ def _validate_cert_file(filename, full_path, seen_fps, seen_subjects, check_hash
 
         # Hash name consistency
         if check_hashes:
-            from certbundle.rehash import compute_subject_hash
+            from crab.rehash import compute_subject_hash
             expected_hash = compute_subject_hash(ci)
             actual_hash = filename.split(".")[0]
             if expected_hash != actual_hash:

@@ -1,4 +1,4 @@
-"""Tests for certbundle.cert — parsing and data model."""
+"""Tests for crab.cert — parsing and data model."""
 
 import os
 import sys
@@ -9,7 +9,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID
 sys.path.insert(0, os.path.dirname(__file__))
 from conftest import _make_ca_cert  # noqa: E402
 
-from certbundle.cert import parse_pem_data, parse_pem_file, CertificateInfo
+from crab.cert import parse_pem_data, parse_pem_file, CertificateInfo
 
 
 class TestParsePemData:

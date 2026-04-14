@@ -24,21 +24,21 @@ from typing import List, Optional
 
 import click
 
-from certbundle import __version__
-from certbundle.cert import parse_pem_file
-from certbundle.config import load_config, build_source, ConfigError
-from certbundle.crl import CRLManager
-from certbundle.output import OutputProfile, build_output
-from certbundle.policy import PolicyEngine
-from certbundle.rehash import CERT_HASH_FILE_RE
-from certbundle.reporting import (
+from crab import __version__
+from crab.cert import parse_pem_file
+from crab.config import load_config, build_source, ConfigError
+from crab.crl import CRLManager
+from crab.output import OutputProfile, build_output
+from crab.policy import PolicyEngine
+from crab.rehash import CERT_HASH_FILE_RE
+from crab.reporting import (
     diff_cert_sets,
     render_diff_text,
     render_diff_json,
     render_source_report,
     render_inventory,
 )
-from certbundle.validation import validate_directory, has_errors, has_warnings
+from crab.validation import validate_directory, has_errors, has_warnings
 
 logger = logging.getLogger(__name__)
 

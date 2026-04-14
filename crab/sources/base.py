@@ -9,7 +9,7 @@ import abc
 import logging
 from typing import Dict, List, Optional
 
-from certbundle.cert import CertificateInfo
+from crab.cert import CertificateInfo
 
 logger = logging.getLogger(__name__)
 

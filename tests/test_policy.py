@@ -1,4 +1,4 @@
-"""Tests for certbundle.policy — PolicyEngine."""
+"""Tests for crab.policy — PolicyEngine."""
 
 import datetime
 import os
@@ -11,8 +11,8 @@ from conftest import _make_ca_cert  # noqa: E402
 
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from certbundle.cert import parse_pem_data
-from certbundle.policy import PolicyEngine, PolicyDecision
+from crab.cert import parse_pem_data
+from crab.policy import PolicyEngine, PolicyDecision
 
 
 def _get_ca(pem):

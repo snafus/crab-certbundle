@@ -1,4 +1,4 @@
-"""Tests for certbundle.rehash — hash computation and symlink map building."""
+"""Tests for crab.rehash — hash computation and symlink map building."""
 
 import re
 import sys
@@ -6,8 +6,8 @@ import subprocess
 import pytest
 from unittest.mock import patch, MagicMock
 
-from certbundle.cert import parse_pem_data
-from certbundle.rehash import (
+from crab.cert import parse_pem_data
+from crab.rehash import (
     compute_subject_hash,
     compute_issuer_hash,
     build_symlink_map,

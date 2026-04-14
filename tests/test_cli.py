@@ -11,7 +11,7 @@ import pytest
 
 from click.testing import CliRunner
 
-from certbundle.cli import main
+from crab.cli import main
 
 
 @pytest.fixture()
@@ -365,7 +365,7 @@ class TestRefresh:
             "    crl:\n"
             "      output_dir: {out}\n".format(src=str(src), out=str(out))
         )
-        with patch("certbundle.cli.CRLManager") as mock_crl:
+        with patch("crab.cli.CRLManager") as mock_crl:
             mock_crl.return_value.update_crls.side_effect = IOError("network error")
             result = runner.invoke(main, ["--config", str(cfg), "refresh"])
 
@@ -592,7 +592,7 @@ class TestApplyLoggingConfig:
 
     def test_log_file_handler_added(self, runner, tmp_path, ca_pem):
         import logging
-        log_file = str(tmp_path / "logs" / "certbundle.log")
+        log_file = str(tmp_path / "logs" / "crab.log")
         cfg = self._make_config(
             tmp_path, ca_pem,
             extra="logging:\n  level: INFO\n  file: {}\n".format(log_file),
@@ -612,7 +612,7 @@ class TestApplyLoggingConfig:
     def test_log_file_handler_idempotent(self, runner, tmp_path, ca_pem):
         """Invoking twice must not add duplicate FileHandlers."""
         import logging
-        log_file = str(tmp_path / "certbundle.log")
+        log_file = str(tmp_path / "crab.log")
         cfg = self._make_config(
             tmp_path, ca_pem,
             extra="logging:\n  file: {}\n".format(log_file),
@@ -633,7 +633,7 @@ class TestApplyLoggingConfig:
         """A log file path that cannot be opened must not crash the CLI."""
         cfg = self._make_config(
             tmp_path, ca_pem,
-            extra="logging:\n  file: /no/such/dir/certbundle.log\n",
+            extra="logging:\n  file: /no/such/dir/crab.log\n",
         )
         result = runner.invoke(main, ["--config", cfg, "show-config"])
         assert result.exit_code == 0
@@ -665,7 +665,7 @@ class TestBuildSourceException:
             "    rehash: builtin\n".format(src=str(src), out=str(out))
         )
         from unittest.mock import patch
-        with patch("certbundle.cli.build_source") as mock_bs:
+        with patch("crab.cli.build_source") as mock_bs:
             mock_bs.return_value.load.side_effect = RuntimeError("source broke")
             result = runner.invoke(main, ["--config", str(cfg), "build"])
         # Should exit 1 due to source error
@@ -742,7 +742,7 @@ class TestBuildWithCrls:
         mock_result.failed = []
         mock_result.missing = ["CN=Test CA"]
         mock_result.errors = []
-        with patch("certbundle.cli.CRLManager") as mock_mgr:
+        with patch("crab.cli.CRLManager") as mock_mgr:
             mock_mgr.return_value.update_crls.return_value = mock_result
             result = runner.invoke(main, ["--config", str(cfg), "build"])
         assert result.exit_code == 0
@@ -917,7 +917,7 @@ class TestRefreshCrlSuccess:
         mock_result.failed = []
         mock_result.missing = ["CN=Test CA"]
         mock_result.errors = []
-        with patch("certbundle.cli.CRLManager") as mock_mgr:
+        with patch("crab.cli.CRLManager") as mock_mgr:
             mock_mgr.return_value.update_crls.return_value = mock_result
             result = runner.invoke(main, ["--config", str(cfg), "refresh"])
         assert result.exit_code == 0
@@ -944,7 +944,7 @@ class TestLoadCertsFromDirectory:
         """A hash-named file that raises on parse is silently skipped."""
         from unittest.mock import patch
         runner.invoke(main, ["--config", cli_env["config"], "build"])
-        with patch("certbundle.cli.parse_pem_file", side_effect=IOError("bad file")):
+        with patch("crab.cli.parse_pem_file", side_effect=IOError("bad file")):
             result = runner.invoke(main, ["--config", cli_env["config"], "diff", "default"])
         # Should not crash regardless of parse errors
         assert result.exit_code in (0, 1)
@@ -961,7 +961,7 @@ class TestLoadConfigOrExitError:
         # Write a valid path so the "no path" check passes
         cfg_file = tmp_path / "crab.yaml"
         cfg_file.write_text("version: 1\nsources: {}\nprofiles: {p: {output_path: /x, sources: []}}\n")
-        with patch("certbundle.cli.load_config", side_effect=RuntimeError("unexpected")):
+        with patch("crab.cli.load_config", side_effect=RuntimeError("unexpected")):
             result = runner.invoke(main, ["--config", str(cfg_file), "show-config"])
         assert result.exit_code == 1
         assert "Cannot load config" in result.output
@@ -1009,7 +1009,7 @@ class TestBuildOutputErrors:
         mock_result.errors = ["something went wrong"]
         mock_result.cert_count = 0
         mock_result.files_written = []
-        with patch("certbundle.cli.build_output", return_value=mock_result):
+        with patch("crab.cli.build_output", return_value=mock_result):
             result = runner.invoke(main, ["--config", str(cfg), "build"])
         assert result.exit_code == 1
         assert "ERROR" in result.output
@@ -1045,7 +1045,7 @@ class TestBuildCrlErrors:
         mock_crl_result.failed = []
         mock_crl_result.missing = []
         mock_crl_result.errors = ["CRL fetch failed for CN=Test"]
-        with patch("certbundle.cli.CRLManager") as mock_mgr:
+        with patch("crab.cli.CRLManager") as mock_mgr:
             mock_mgr.return_value.update_crls.return_value = mock_crl_result
             result = runner.invoke(main, ["--config", str(cfg), "build"])
         assert result.exit_code == 0
@@ -1058,7 +1058,7 @@ class TestLoadProfileCertsSourceError:
         from unittest.mock import patch
         runner.invoke(main, ["--config", cli_env["config"], "build"])
         # diff calls _load_profile_certs; force a source failure there
-        with patch("certbundle.cli.build_source") as mock_bs:
+        with patch("crab.cli.build_source") as mock_bs:
             mock_bs.return_value.load.side_effect = RuntimeError("source exploded")
             result = runner.invoke(
                 main, ["--config", cli_env["config"], "diff", "default"]
@@ -1097,7 +1097,7 @@ class TestFetchCrlsErrors:
         mock_result.failed = []
         mock_result.missing = []
         mock_result.errors = ["fetch failed: connection refused"]
-        with patch("certbundle.cli.CRLManager") as mock_mgr:
+        with patch("crab.cli.CRLManager") as mock_mgr:
             mock_mgr.return_value.update_crls.return_value = mock_result
             result = runner.invoke(main, ["--config", str(cfg), "fetch-crls"])
         assert result.exit_code == 0
@@ -1134,7 +1134,7 @@ class TestRefreshCrlErrors:
         mock_crl_result.failed = []
         mock_crl_result.missing = []
         mock_crl_result.errors = ["failed to download CRL"]
-        with patch("certbundle.cli.CRLManager") as mock_mgr:
+        with patch("crab.cli.CRLManager") as mock_mgr:
             mock_mgr.return_value.update_crls.return_value = mock_crl_result
             result = runner.invoke(main, ["--config", str(cfg), "refresh"])
         assert result.exit_code == 0

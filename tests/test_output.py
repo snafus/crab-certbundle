@@ -1,4 +1,4 @@
-"""Tests for certbundle.output — directory building and atomic replacement."""
+"""Tests for crab.output — directory building and atomic replacement."""
 
 import os
 import re
@@ -6,13 +6,13 @@ import sys
 import pytest
 from unittest.mock import patch, MagicMock
 
-from certbundle.cert import parse_pem_data
-from certbundle.output import (
+from crab.cert import parse_pem_data
+from crab.output import (
     OutputProfile, build_output, BuildResult,
     _atomic_swap, _try_renameat2_exchange, _build_bundle, _build_pkcs12,
     _cert_annotation, _write_igtf_meta, _write_file,
 )
-from certbundle.sources.base import SourceResult
+from crab.sources.base import SourceResult
 
 
 def _make_profile(tmp_path, name="test", atomic=False, rehash="builtin"):
@@ -444,7 +444,7 @@ class TestRehashModes:
             "atomic": False,
             "rehash": "openssl",
         })
-        with patch("certbundle.output.rehash_directory", return_value=False):
+        with patch("crab.output.rehash_directory", return_value=False):
             result = build_output(certs, profile)
         assert any("rehash failed" in e for e in result.errors)
 
@@ -561,7 +561,7 @@ class TestAtomicSwapParent:
         (staging / "new").write_text("new")
         (output / "old").write_text("old")
         # Force the fallback even though renameat2 might succeed on Linux
-        with patch("certbundle.output._try_renameat2_exchange", return_value=False):
+        with patch("crab.output._try_renameat2_exchange", return_value=False):
             _atomic_swap(str(staging), str(output))
         assert (output / "new").exists()
         assert not (output / "old").exists()
@@ -595,7 +595,7 @@ class TestRenameat2NonLinux:
         b = tmp_path / "b"
         a.mkdir()
         b.mkdir()
-        with patch("certbundle.output._platform.system", return_value="Darwin"):
+        with patch("crab.output._platform.system", return_value="Darwin"):
             result = _try_renameat2_exchange(str(a), str(b))
         assert result is False
 
@@ -606,7 +606,7 @@ class TestRenameat2NonLinux:
         b = tmp_path / "b"
         a.mkdir()
         b.mkdir()
-        with patch("certbundle.output._platform.machine", return_value="mips"):
+        with patch("crab.output._platform.machine", return_value="mips"):
             result = _try_renameat2_exchange(str(a), str(b))
         assert result is False
 
@@ -617,7 +617,7 @@ class TestRenameat2NonLinux:
         b = tmp_path / "b"
         a.mkdir()
         b.mkdir()
-        with patch("certbundle.output.ctypes.util.find_library", return_value=None):
+        with patch("crab.output.ctypes.util.find_library", return_value=None):
             result = _try_renameat2_exchange(str(a), str(b))
         assert result is False
 
@@ -628,7 +628,7 @@ class TestRenameat2NonLinux:
         b = tmp_path / "b"
         a.mkdir()
         b.mkdir()
-        with patch("certbundle.output.ctypes.CDLL", side_effect=OSError("load failed")):
+        with patch("crab.output.ctypes.CDLL", side_effect=OSError("load failed")):
             result = _try_renameat2_exchange(str(a), str(b))
         assert result is False
 
@@ -735,7 +735,7 @@ class TestBuildPkcs12:
 
     def test_unparseable_cert_skipped(self, tmp_path, ca_pem):
         """A CertificateInfo whose PEM cannot be parsed is skipped with a warning."""
-        from certbundle.cert import CertificateInfo
+        from crab.cert import CertificateInfo
         bad = CertificateInfo.__new__(CertificateInfo)
         bad.pem_data = b"not valid PEM data"
         bad.fingerprint_sha256 = "deadbeef"
@@ -750,7 +750,7 @@ class TestBuildPkcs12:
         """Temp file is removed when os.replace raises."""
         certs = parse_pem_data(ca_pem)
         profile = self._make_p12_profile(tmp_path)
-        with patch("certbundle.output.os.replace", side_effect=OSError("disk full")):
+        with patch("crab.output.os.replace", side_effect=OSError("disk full")):
             with pytest.raises(OSError, match="disk full"):
                 build_output(certs, profile)
         # No stray .tmp files

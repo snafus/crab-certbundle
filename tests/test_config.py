@@ -1,10 +1,10 @@
-"""Tests for certbundle.config — YAML loading and validation."""
+"""Tests for crab.config — YAML loading and validation."""
 
 import os
 import unittest.mock as mock
 import pytest
 
-from certbundle.config import load_config, Config, ConfigError, _nearest_existing_dir
+from crab.config import load_config, Config, ConfigError, _nearest_existing_dir
 
 
 class TestLoadConfig:
@@ -177,14 +177,14 @@ class TestStagingDeviceCheck:
         out = str(tmp_path / "out")
         stg = str(tmp_path / "out.staging")
         path = self._write_cfg(tmp_path, pem_dir, out, stg)
-        with caplog.at_level(logging.WARNING, logger="certbundle.config"):
+        with caplog.at_level(logging.WARNING, logger="crab.config"):
             load_config(path)
         assert "different filesystem" not in caplog.text
 
     def test_cross_device_emits_warning(self, caplog):
         """output and staging resolving to different st_dev → warning logged."""
         import logging
-        from certbundle.config import _check_staging_device
+        from crab.config import _check_staging_device
 
         # Patch _nearest_existing_dir so os.stat is only called with known paths,
         # then return different st_dev values to simulate a cross-device config.
@@ -196,14 +196,14 @@ class TestStagingDeviceCheck:
         }
 
         with mock.patch(
-            "certbundle.config._nearest_existing_dir",
+            "crab.config._nearest_existing_dir",
             side_effect=[fake_out_dir, fake_stg_dir],
         ):
             with mock.patch(
-                "certbundle.config.os.stat",
+                "crab.config.os.stat",
                 side_effect=lambda p: stat_map[p],
             ):
-                with caplog.at_level(logging.WARNING, logger="certbundle.config"):
+                with caplog.at_level(logging.WARNING, logger="crab.config"):
                     _check_staging_device("/fake/out", "/fake/staging", "myprofile")
 
         assert "different filesystem" in caplog.text
@@ -232,7 +232,7 @@ class TestStagingDeviceCheck:
                     pem_dir=pem_dir, out=str(tmp_path / "out")
                 )
             )
-        with mock.patch("certbundle.config._check_staging_device") as mock_check:
+        with mock.patch("crab.config._check_staging_device") as mock_check:
             load_config(path)
         mock_check.assert_not_called()
 
@@ -298,9 +298,9 @@ class TestLoggingConfig:
     def test_file_key_accepted(self, tmp_path, pem_dir):
         path = str(tmp_path / "config.yaml")
         _write_config(path, pem_dir, str(tmp_path / "out"),
-                      extra="logging:\n  file: /var/log/certbundle.log\n")
+                      extra="logging:\n  file: /var/log/crab.log\n")
         cfg = load_config(path)
-        assert cfg.logging_config["file"] == "/var/log/certbundle.log"
+        assert cfg.logging_config["file"] == "/var/log/crab.log"
 
     def test_file_non_string_raises(self, tmp_path, pem_dir):
         path = str(tmp_path / "config.yaml")
@@ -321,7 +321,7 @@ class TestLoggingConfig:
 # Environment variable interpolation
 # ---------------------------------------------------------------------------
 
-from certbundle.config import _expand_env_vars
+from crab.config import _expand_env_vars
 
 
 class TestExpandEnvVars:
@@ -339,8 +339,8 @@ class TestExpandEnvVars:
 
     def test_expands_variable_mid_string(self, monkeypatch):
         monkeypatch.setenv("PREFIX", "/var/cache")
-        result = _expand_env_vars("${PREFIX}/certbundle")
-        assert result == "/var/cache/certbundle"
+        result = _expand_env_vars("${PREFIX}/crab")
+        assert result == "/var/cache/crab"
 
     def test_expands_multiple_vars(self, monkeypatch):
         monkeypatch.setenv("A", "foo")
@@ -349,12 +349,12 @@ class TestExpandEnvVars:
 
     def test_default_used_when_var_unset(self, monkeypatch):
         monkeypatch.delenv("CERTBUNDLE_CACHE_DIR", raising=False)
-        result = _expand_env_vars("${CERTBUNDLE_CACHE_DIR:-/var/cache/certbundle}")
-        assert result == "/var/cache/certbundle"
+        result = _expand_env_vars("${CERTBUNDLE_CACHE_DIR:-/var/cache/crab}")
+        assert result == "/var/cache/crab"
 
     def test_default_not_used_when_var_set(self, monkeypatch):
         monkeypatch.setenv("CERTBUNDLE_CACHE_DIR", "/custom/path")
-        result = _expand_env_vars("${CERTBUNDLE_CACHE_DIR:-/var/cache/certbundle}")
+        result = _expand_env_vars("${CERTBUNDLE_CACHE_DIR:-/var/cache/crab}")
         assert result == "/custom/path"
 
     def test_empty_default_is_valid(self, monkeypatch):
@@ -363,7 +363,7 @@ class TestExpandEnvVars:
 
     def test_raises_config_error_for_unset_required_var(self, monkeypatch):
         monkeypatch.delenv("REQUIRED_VAR", raising=False)
-        from certbundle.config import ConfigError
+        from crab.config import ConfigError
         with pytest.raises(ConfigError, match="REQUIRED_VAR"):
             _expand_env_vars("${REQUIRED_VAR}")
 
@@ -397,7 +397,7 @@ class TestExpandEnvVars:
     def test_multiple_missing_vars_all_named(self, monkeypatch):
         monkeypatch.delenv("MISSING_A", raising=False)
         monkeypatch.delenv("MISSING_B", raising=False)
-        from certbundle.config import ConfigError
+        from crab.config import ConfigError
         with pytest.raises(ConfigError) as exc_info:
             _expand_env_vars("${MISSING_A} and ${MISSING_B}")
         msg = str(exc_info.value)
@@ -440,7 +440,7 @@ class TestLoadConfigEnvVars:
             "  s:\n"
             "    type: local\n"
             "    path: {pem_dir}\n"
-            "    cache_dir: ${{CACHE_DIR:-/var/cache/certbundle}}\n"
+            "    cache_dir: ${{CACHE_DIR:-/var/cache/crab}}\n"
             "profiles:\n"
             "  p:\n"
             "    sources: [s]\n"
@@ -449,7 +449,7 @@ class TestLoadConfigEnvVars:
             )
         )
         cfg = load_config(cfg_path)
-        assert cfg.sources["s"].raw.get("cache_dir") == "/var/cache/certbundle"
+        assert cfg.sources["s"].raw.get("cache_dir") == "/var/cache/crab"
 
     def test_missing_required_var_raises_config_error(self, tmp_path, pem_dir, monkeypatch):
         monkeypatch.delenv("REQUIRED_OUT", raising=False)
@@ -465,7 +465,7 @@ class TestLoadConfigEnvVars:
             "    sources: [s]\n"
             "    output_path: ${{REQUIRED_OUT}}\n".format(pem_dir=pem_dir)
         )
-        from certbundle.config import ConfigError
+        from crab.config import ConfigError
         with pytest.raises(ConfigError, match="REQUIRED_OUT"):
             load_config(cfg_path)
 

@@ -1,4 +1,4 @@
-# certbundle — Architecture Notes
+# crab — Architecture Notes
 
 ## Overview
 
@@ -29,18 +29,18 @@ Each stage is a separate Python module with a well-defined interface.
 
 | Module | Responsibility |
 |---|---|
-| `certbundle.cert` | `CertificateInfo` data model; PEM/DER parsing |
-| `certbundle.rehash` | OpenSSL subject-hash computation; `build_symlink_map` |
-| `certbundle.sources.igtf` | Load IGTF tarballs / directories |
-| `certbundle.sources.local` | Load local directories and bundle files |
-| `certbundle.sources.http` | HTTP download with retry |
-| `certbundle.policy` | Include/exclude rule engine |
-| `certbundle.output` | Write CApath directories; atomic swap |
-| `certbundle.crl` | Fetch, store, and validate CRLs |
-| `certbundle.validation` | Post-build directory health checks |
-| `certbundle.reporting` | Diff computation; text and JSON rendering |
-| `certbundle.config` | YAML config loading and validation |
-| `certbundle.cli` | Click-based command-line interface |
+| `crab.cert` | `CertificateInfo` data model; PEM/DER parsing |
+| `crab.rehash` | OpenSSL subject-hash computation; `build_symlink_map` |
+| `crab.sources.igtf` | Load IGTF tarballs / directories |
+| `crab.sources.local` | Load local directories and bundle files |
+| `crab.sources.http` | HTTP download with retry |
+| `crab.policy` | Include/exclude rule engine |
+| `crab.output` | Write CApath directories; atomic swap |
+| `crab.crl` | Fetch, store, and validate CRLs |
+| `crab.validation` | Post-build directory health checks |
+| `crab.reporting` | Diff computation; text and JSON rendering |
+| `crab.config` | YAML config loading and validation |
+| `crab.cli` | Click-based command-line interface |
 
 ---
 
