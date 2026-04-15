@@ -35,13 +35,13 @@ jobs:
           VERSION=$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('setup.cfg'); print(c['metadata']['version'])")
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          git archive --prefix=crab-crab-${VERSION}/ HEAD \
-            | gzip > rpmbuild/SOURCES/crab-crab-${VERSION}.tar.gz
-          cp packaging/rpm/crab-crab.spec rpmbuild/SPECS/
+          git archive --prefix=crab-certbundle-${VERSION}/ HEAD \
+            | gzip > rpmbuild/SOURCES/crab-certbundle-${VERSION}.tar.gz
+          cp packaging/rpm/crab-certbundle.spec rpmbuild/SPECS/
 
       - name: Build RPM
         run: |
-          rpmbuild -ba rpmbuild/SPECS/crab-crab.spec \
+          rpmbuild -ba rpmbuild/SPECS/crab-certbundle.spec \
             --define "_topdir $(pwd)/rpmbuild"
 
       - name: Upload EL8 RPM artifact
@@ -78,13 +78,13 @@ jobs:
           VERSION=$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('setup.cfg'); print(c['metadata']['version'])")
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          git archive --prefix=crab-crab-${VERSION}/ HEAD \
-            | gzip > rpmbuild/SOURCES/crab-crab-${VERSION}.tar.gz
-          cp packaging/rpm/crab-crab.spec rpmbuild/SPECS/
+          git archive --prefix=crab-certbundle-${VERSION}/ HEAD \
+            | gzip > rpmbuild/SOURCES/crab-certbundle-${VERSION}.tar.gz
+          cp packaging/rpm/crab-certbundle.spec rpmbuild/SPECS/
 
       - name: Build RPM
         run: |
-          rpmbuild -ba rpmbuild/SPECS/crab-crab.spec \
+          rpmbuild -ba rpmbuild/SPECS/crab-certbundle.spec \
             --define "_topdir $(pwd)/rpmbuild"
 
       - name: Upload EL9 RPM artifact
@@ -94,6 +94,32 @@ jobs:
           path: |
             rpmbuild/RPMS/**/*.rpm
             rpmbuild/SRPMS/**/*.rpm
+
+  # ── Build .deb for Ubuntu 22.04 ──────────────────────────────────────────
+  deb:
+    name: DEB / Ubuntu 22.04
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q \
+            dpkg-dev debhelper python3-pip gcc libssl-dev libffi-dev git
+
+      - name: Build .deb
+        run: |
+          git config --global --add safe.directory '*'
+          bash packaging/deb/build-deb.sh
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-ubuntu2204
+          path: debbuild/crab-certbundle_*.deb
 
   # ── Build and push container image to GHCR ───────────────────────────────
   container-image:
@@ -139,10 +165,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # ── Create GitHub Release and attach RPMs ─────────────────────────────────
+  # ── Create GitHub Release and attach packages ────────────────────────────
   release:
     name: GitHub Release
-    needs: [rpm-el8, rpm-el9, container-image]
+    needs: [rpm-el8, rpm-el9, deb, container-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -163,8 +189,14 @@ jobs:
           name: rpm-el9
           path: dist/el9
 
+      - name: Download Ubuntu 22.04 DEB
+        uses: actions/download-artifact@v4
+        with:
+          name: deb-ubuntu2204
+          path: dist/deb
+
       - name: List release assets
-        run: find dist/ -name "*.rpm" | sort
+        run: find dist/ -name "*.rpm" -o -name "*.deb" | sort
 
       - name: Extract changelog entry for this version
         id: changelog
@@ -185,4 +217,5 @@ jobs:
             --title "CRAB ${{ github.ref_name }}" \
             --notes-file "${{ steps.changelog.outputs.notes_file }}" \
             dist/el8/**/*.rpm \
-            dist/el9/**/*.rpm
+            dist/el9/**/*.rpm \
+            dist/deb/*.deb

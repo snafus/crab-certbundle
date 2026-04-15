@@ -46,7 +46,7 @@ directory that can be used directly by any software reading
 | Rocky Linux 9 / RHEL 9 / AlmaLinux 9 | 3.9 (system) | **Supported** |
 | Ubuntu 22.04 LTS | 3.10 | **Supported** |
 | Ubuntu 24.04 LTS | 3.12 | **Supported** |
-| Any Linux, Python 3.6.8 – 3.12 | any | **Supported** |
+| Any Linux, Python 3.6.8 – 3.13 | any | **Supported** |
 
 No features from Python 3.7+ are used (no `dataclasses`, no walrus operator,
 no `tomllib`, no `dict[str,str]` generic syntax).
@@ -65,8 +65,38 @@ no `tomllib`, no `dict[str,str]` generic syntax).
 
 ## Installation
 
+### RPM (Rocky Linux 8 / 9, RHEL, AlmaLinux)
+
 ```bash
-# From source (recommended for EL/Rocky systems)
+# Build the .rpm (requires rpmbuild, python3-pip, gcc, openssl-devel, libffi-devel)
+mkdir -p rpmbuild/SOURCES
+git archive --format=tar.gz --prefix=crab-certbundle-0.2.0/ HEAD \
+    > rpmbuild/SOURCES/crab-certbundle-0.2.0.tar.gz
+rpmbuild -ba packaging/rpm/crab-certbundle.spec \
+    --define "_topdir $(pwd)/rpmbuild" \
+    --define "_sourcedir $(pwd)/rpmbuild/SOURCES"
+# Install
+sudo rpm -ivh rpmbuild/RPMS/x86_64/crab-certbundle-*.rpm
+```
+
+### Debian/Ubuntu (22.04 LTS, 24.04 LTS)
+
+```bash
+# Install build dependencies
+sudo apt-get install -y dpkg-dev debhelper python3-pip gcc libssl-dev libffi-dev
+
+# Build the .deb
+bash packaging/deb/build-deb.sh
+# → debbuild/crab-certbundle_0.2.0-1_amd64.deb
+
+# Install
+sudo dpkg -i debbuild/crab-certbundle_*_amd64.deb
+```
+
+### From source (any platform)
+
+```bash
+# From source
 pip3 install .
 
 # With optional pyOpenSSL for accurate hash computation
@@ -488,6 +518,14 @@ pytest --cov=crab --cov-report=term-missing
 # In a Rocky 8 container
 docker build -t crab-test .
 docker run --rm crab-test pytest -v
+
+# Build and smoke-test the .deb on Ubuntu 22.04
+docker run --rm -v "$(pwd)":/src ubuntu:22.04 bash -c "
+    apt-get update -q &&
+    apt-get install -y -q dpkg-dev debhelper python3-pip gcc libssl-dev libffi-dev &&
+    cd /src &&
+    bash packaging/deb/build-deb.sh &&
+    dpkg -I debbuild/crab-certbundle_*_amd64.deb"
 ```
 
 ---
