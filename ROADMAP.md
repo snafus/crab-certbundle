@@ -66,45 +66,66 @@ Core trust-directory pipeline, complete and tested.
 
 ## 🔲 0.2.0 — Pre-release Hardening and Distribution
 
-*Goal: close known defects, tighten the public API surface, and publish to PyPI.
-Changes after this point must be backwards-compatible or version-bumped.*
+*Goal: close known defects, tighten the public API surface, add CRAB-PKI for
+test certificate generation, and publish to PyPI.  Changes after this point
+must be backwards-compatible or version-bumped.*
 
-### Bug fixes (must ship before PyPI release)
+### Bug fixes
 
-- 🔲 **`file_mode`/`dir_mode` string parsing** — YAML `"0o644"` is loaded as a
-  string; `int("0o644")` raises `ValueError`. Fix `ProfileConfig` to accept
-  both integers and `"0o644"`-style strings; update `config-full.yaml` to use
-  bare integers. Add regression test.
-- 🔲 **`diff` exit code inconsistency** — in JSON mode exit is always 0 even
-  when changes are detected; in text mode exit 1 means "changes exist". Fix
-  JSON mode to match text mode contract.
-- 🔲 **Silent parse errors in `_load_certs_from_directory`** — `except Exception:
-  pass` in `cli.py` discards corrupt cert files without logging the filename.
-  Replace with `logger.warning(...)`.
-- 🔲 **`description:` key silently ignored in profiles** — read, store, and
-  display in `show-config` output.
+- ✅ **`file_mode`/`dir_mode` string parsing** — `ProfileConfig` now accepts
+  both bare integers and `"0o644"`-style octal strings via `int(v, 0)`.
+- ✅ **`diff` exit code inconsistency** — JSON mode now exits 1 when changes
+  are present, matching text mode.
+- ✅ **Silent parse errors in `_load_certs_from_directory`** — replaced
+  `except Exception: pass` with `logger.warning(...)`.
+- ✅ **`description:` key silently ignored in profiles** — read, stored, and
+  displayed in `show-config` output.
 
-### Architecture (cheap now, breaking after PyPI)
+### Architecture
 
-- 🔲 **Move `build_source` and source registry to `crab/sources/__init__.py`**
-  — removes the circular dependency risk in `config.py` and makes the source
-  extension point explicit. All source types registered in one dict.
-- 🔲 **Introduce ternary `PolicyOutcome` (ACCEPT / WARN / REJECT)** — replaces
-  the `PolicyDecision.accepted: bool` today; required by exit code 3 (0.3.0)
-  and `warn:` policy rules (0.4.0). Adding it now avoids a breaking change
-  across all `if decision.accepted:` call sites later.
-- 🔲 **Integrate `CRLManager.validate_crls` into the validation pipeline** —
-  `validate_crls` exists and is tested but is never called from `validate_directory`
-  or the CLI. `crabctl validate` should report stale or missing CRLs when
+- ✅ **Move `build_source` and source registry to `crab/sources/__init__.py`**
+  — `SOURCE_REGISTRY` dict is the single authoritative mapping; `config.py`
+  retains a thin re-export wrapper for backwards compatibility.
+- ✅ **Ternary `PolicyOutcome` (ACCEPT / WARN / REJECT)** — replaces the
+  `accepted: bool` field; `accepted` is now a property returning
+  `outcome != REJECT`; no call-site changes required.
+- ✅ **Integrate `CRLManager.validate_crls` into the validation pipeline** —
+  `crabctl validate` now reports stale/missing CRLs for profiles with
   `include_crls: true`.
 
-### Packaging and distribution
+### CRAB-PKI — test CA and certificate generation
+
+*Allows operators to bootstrap a minimal internal PKI for lab and CI
+environments without external tooling.  Intentionally narrower than
+step-ca/cfssl; the target is "working test CA in ten minutes".*
+
+- ✅ `crabctl ca init [CA_DIR]` — self-signed root CA; RSA-2048/4096,
+  ECDSA P-256/P-384, or Ed25519; key written mode 0600
+- ✅ `crabctl ca show [CA_DIR] [--json]`
+- ✅ `crabctl cert issue --ca CA_DIR --cn NAME [--san …] [--profile PROFILE]
+  [--key-type TYPE] [--days N] [--cdp-url URL]`
+- ✅ `crabctl cert revoke --ca CA_DIR CERT [--reason REASON]` — updates serial
+  DB and regenerates CRL atomically
+- ✅ `crabctl cert list --ca CA_DIR [--json] [--revoked]`
+- ✅ Certificate profiles: `server` (serverAuth), `client` (clientAuth),
+  `grid-host` (serverAuth + clientAuth for XRootD/dCache/gfal2)
+- ✅ `keyEncipherment` correctly absent from ECDSA and Ed25519 certs
+- ✅ P-384 CA signs with SHA-384; P-256 and RSA CAs sign with SHA-256
+- ✅ Serial database (`serial.db`, JSON-lines, `fcntl`-locked)
+- ✅ `--add-to-profile` prints the `crab.yaml` snippet for source registration
+- ✅ 78 unit tests + 14 integration tests (including full CA→build→validate
+  round-trip via `openssl verify -CApath`)
+
+### Config and tooling
+
+- ✅ JSON Schema for `crab.yaml` (editor autocompletion via
+  `yaml-language-server`)
+
+### Packaging and distribution (remaining)
 
 - 🔲 PyPI release (`crabctl` package name)
 - 🔲 Debian/Ubuntu `.deb` package (for Ubuntu 22.04 LTS)
-- ✅ JSON Schema for `crab.yaml` (machine-readable validation, editor
-  auto-complete via `yaml-language-server`)
-- 🔲 `crab --version` reports commit SHA when installed from source
+- 🔲 `crabctl --version` reports commit SHA when installed from source
 - 🔲 Tox matrix extended to Python 3.13
 - 🔲 `CONTRIBUTING.md`
 
