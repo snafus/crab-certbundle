@@ -1,0 +1,30 @@
+Source: crab-certbundle
+Section: admin
+Priority: optional
+Maintainer: SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>
+Build-Depends: debhelper-compat (= 13),
+               python3 (>= 3.6),
+               python3-pip,
+               gcc,
+               libssl-dev,
+               libffi-dev
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://github.com/snafus/crab-certbundle
+
+Package: crab-certbundle
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, python3, openssl
+Description: OpenSSL-style CA certificate directory builder for research infrastructure
+ CRAB (Certificate Root Anchor Builder) generates and updates hashed CApath
+ directories suitable for XRootD, dCache, curl/OpenSSL consumers, and similar
+ data-movement middleware used in research computing (SRCNet, WLCG, EGI).
+ .
+ Features: atomic directory replacement, policy engine (CA flag, expiry, EKU,
+ IGTF policy-tag filtering), CRL fetch and freshness validation, diff mode,
+ dry-run mode, JSON output, and a built-in test CA (crabctl ca / cert).
+ .
+ Python 3.6.8+ compatible; no dependency on OSG, VOMS, or grid middleware.
+ All Python runtime dependencies are vendored under
+ /usr/share/crab-certbundle/vendor so the package does not conflict with
+ system Python packages.

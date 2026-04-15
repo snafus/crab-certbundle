@@ -1,0 +1,77 @@
+#!/usr/bin/make -f
+#
+# Debian rules for crab-certbundle.
+#
+# Strategy: vendor all Python runtime dependencies into
+# /usr/share/crab-certbundle/vendor with pip --target so the package is
+# entirely self-contained and does not conflict with system Python packages.
+# Because vendored cryptography/cffi contain compiled C extensions, the
+# resulting .deb is architecture-specific (not Architecture: all).
+#
+# Build:
+#   cd debbuild/crab-certbundle-<VERSION> && dpkg-buildpackage -us -uc -b
+# (see packaging/deb/build-deb.sh for the full workflow)
+
+export DH_VERBOSE = 0
+
+PACKAGE    = crab-certbundle
+VENDOR_DIR = debian/$(PACKAGE)/usr/share/$(PACKAGE)/vendor
+
+%:
+	dh $@
+
+# We vendor all Python dependencies ourselves; skip debhelper's Python build
+# subsystem entirely so it does not interfere with the vendor directory.
+override_dh_auto_configure:
+
+override_dh_auto_build:
+
+override_dh_auto_test:
+
+override_dh_auto_install:
+	# ── Vendor runtime dependencies ──────────────────────────────────
+	# --prefer-binary: use a pre-built wheel when available; this avoids
+	# compiling cryptography from source (which requires Rust on >= 3.4).
+	install -d $(VENDOR_DIR)
+	python3 -m pip install \
+	    --no-cache-dir \
+	    --prefer-binary \
+	    --target $(VENDOR_DIR) \
+	    "cryptography>=2.8" \
+	    "PyYAML>=5.1" \
+	    "click>=7.0" \
+	    "requests>=2.20"
+	# Install crab package itself (deps already vendored above).
+	python3 -m pip install \
+	    --no-cache-dir \
+	    --no-deps \
+	    --target $(VENDOR_DIR) \
+	    .
+	# Remove pip-generated entry-point scripts; we install our own wrapper.
+	rm -rf $(VENDOR_DIR)/bin
+	# ── crabctl wrapper ──────────────────────────────────────────────
+	install -d debian/$(PACKAGE)/usr/bin
+	install -m 0755 debian/crabctl.wrapper \
+	    debian/$(PACKAGE)/usr/bin/crabctl
+	# ── systemd units ────────────────────────────────────────────────
+	install -d debian/$(PACKAGE)/lib/systemd/system
+	install -m 0644 systemd/crab.service \
+	    debian/$(PACKAGE)/lib/systemd/system/crabctl.service
+	install -m 0644 systemd/crab.timer \
+	    debian/$(PACKAGE)/lib/systemd/system/crabctl.timer
+	# ── Config skeleton ──────────────────────────────────────────────
+	# Directory owned by the package; config.yaml created by the admin.
+	install -d debian/$(PACKAGE)/etc/crab
+	# ── Example configs ──────────────────────────────────────────────
+	install -d debian/$(PACKAGE)/usr/share/$(PACKAGE)/examples
+	install -m 0644 examples/*.yaml \
+	    debian/$(PACKAGE)/usr/share/$(PACKAGE)/examples/
+
+# We manage systemd lifecycle ourselves in postinst/prerm/postrm.
+override_dh_installsystemd:
+
+# Exclude the vendor tree from automatic shared-library dependency scanning.
+# The compiled extensions there are implementation details, not system
+# libraries; including them would produce spurious or unresolvable Depends.
+override_dh_shlibdeps:
+	dh_shlibdeps -Xvendor

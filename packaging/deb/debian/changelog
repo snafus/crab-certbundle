@@ -1,0 +1,14 @@
+crab-certbundle (0.2.0-1) unstable; urgency=medium
+
+  * 0.2.0 release: CRAB-PKI (crabctl ca/cert commands), JSON Schema for
+    crab.yaml, ternary PolicyOutcome, CRL validation in pipeline, source
+    registry refactor, bug fixes (file_mode parsing, diff exit code,
+    silent parse errors, description key).
+
+ -- SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>  Wed, 15 Apr 2026 00:00:00 +0000
+
+crab-certbundle (0.1.0-1) unstable; urgency=medium
+
+  * Initial Debian packaging.
+
+ -- SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>  Sat, 12 Apr 2026 00:00:00 +0000

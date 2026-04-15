@@ -1,0 +1,24 @@
+#!/bin/sh
+# postinst for crab-certbundle
+set -e
+
+case "$1" in
+    configure|abort-upgrade|abort-deconfigure|abort-remove)
+        if [ -d /run/systemd/system ]; then
+            systemctl --system daemon-reload >/dev/null 2>&1 || true
+            # Enable the timer so it survives reboots.
+            systemctl enable crabctl.timer >/dev/null 2>&1 || true
+            # Start the timer if it is not already active.
+            if ! systemctl is-active --quiet crabctl.timer 2>/dev/null; then
+                systemctl start crabctl.timer >/dev/null 2>&1 || true
+            fi
+        fi
+        ;;
+    *)
+        echo "postinst: unrecognised argument '$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

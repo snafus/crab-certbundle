@@ -124,9 +124,9 @@ step-ca/cfssl; the target is "working test CA in ten minutes".*
 ### Packaging and distribution (remaining)
 
 - 🔲 PyPI release (`crabctl` package name)
-- 🔲 Debian/Ubuntu `.deb` package (for Ubuntu 22.04 LTS)
+- ✅ Debian/Ubuntu `.deb` package (Ubuntu 22.04 LTS and 24.04 LTS)
 - 🔲 `crabctl --version` reports commit SHA when installed from source
-- 🔲 Tox matrix extended to Python 3.13
+- ✅ Tox matrix extended to Python 3.12 and 3.13
 - 🔲 `CONTRIBUTING.md`
 
 ---
