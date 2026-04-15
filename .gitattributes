@@ -1,0 +1,5 @@
+# Substitute git commit metadata into _commit.py when git-archive creates
+# a tarball (used by the RPM spec, deb build script, and release workflow).
+# The $Format:%h$ placeholder is replaced with the short commit SHA so
+# packaged installs (RPM/deb) report the correct commit in crabctl --version.
+crab/_commit.py export-subst
