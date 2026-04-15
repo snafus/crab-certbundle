@@ -22,6 +22,10 @@ VENDOR_DIR = debian/$(PACKAGE)/usr/share/$(PACKAGE)/vendor
 
 # We vendor all Python dependencies ourselves; skip debhelper's Python build
 # subsystem entirely so it does not interfere with the vendor directory.
+# override_dh_auto_clean is required: debhelper compat 13 auto-detects
+# setup.cfg/setup.py and tries the python-distutils build system, which was
+# removed in compat 12 — suppressing it here avoids the fatal clean error.
+override_dh_auto_clean:
 override_dh_auto_configure:
 
 override_dh_auto_build:

@@ -204,7 +204,7 @@ jobs:
         run: |
           python3 --version
           openssl version
-          python3 -m pip list --break-system-packages
+          python3 -m pip list
 
       - name: Run unit tests
         run: |
