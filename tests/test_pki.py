@@ -10,7 +10,7 @@ import pytest
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import rsa as _rsa, ed25519 as _ed25519
+from cryptography.hazmat.primitives.asymmetric import ec as _ec, ed25519 as _ed25519, rsa as _rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from crab.pki import (
@@ -302,9 +302,69 @@ class TestIssueCert:
         )
         cert = _load_cert(cert_path)
         ku = cert.extensions.get_extension_for_class(x509.KeyUsage).value
-        # Ed25519 does not support key encipherment
         assert ku.key_encipherment is False
         assert ku.digital_signature is True
+
+    def test_ecdsa_p256_key(self, ca_dir, tmp_path):
+        out = str(tmp_path / "out")
+        cert_path, _ = issue_cert(
+            ca_dir, cn="host.example.com", key_type="ecdsa-p256", out_dir=out
+        )
+        cert = _load_cert(cert_path)
+        pub = cert.public_key()
+        assert isinstance(pub, _ec.EllipticCurvePublicKey)
+        assert isinstance(pub.curve, _ec.SECP256R1)
+
+    def test_ecdsa_p384_key(self, ca_dir, tmp_path):
+        out = str(tmp_path / "out")
+        cert_path, _ = issue_cert(
+            ca_dir, cn="host.example.com", key_type="ecdsa-p384", out_dir=out
+        )
+        cert = _load_cert(cert_path)
+        pub = cert.public_key()
+        assert isinstance(pub, _ec.EllipticCurvePublicKey)
+        assert isinstance(pub.curve, _ec.SECP384R1)
+
+    def test_ecdsa_no_key_encipherment(self, ca_dir, tmp_path):
+        """ECDSA keys must not have keyEncipherment — EC uses ECDH, not RSA key exchange."""
+        for kt in ("ecdsa-p256", "ecdsa-p384"):
+            out = str(tmp_path / kt)
+            cert_path, _ = issue_cert(
+                ca_dir, cn="host.example.com", key_type=kt, out_dir=out
+            )
+            cert = _load_cert(cert_path)
+            ku = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+            assert ku.key_encipherment is False, "{} should not have keyEncipherment".format(kt)
+            assert ku.digital_signature is True
+
+    def test_p384_ca_signs_with_sha384(self, tmp_path):
+        """A P-384 CA uses SHA-384 signatures — matching the curve's security level."""
+        ca_p384 = str(tmp_path / "p384-ca")
+        init_ca(ca_p384, cn="P384 CA", key_type="ecdsa-p384")
+        out = str(tmp_path / "out")
+        cert_path, _ = issue_cert(ca_p384, cn="host.example.com", out_dir=out)
+        cert = _load_cert(cert_path)
+        assert isinstance(cert.signature_hash_algorithm, hashes.SHA384)
+
+    def test_p256_ca_signs_with_sha256(self, tmp_path):
+        """A P-256 CA uses SHA-256 signatures."""
+        ca_p256 = str(tmp_path / "p256-ca")
+        init_ca(ca_p256, cn="P256 CA", key_type="ecdsa-p256")
+        out = str(tmp_path / "out")
+        cert_path, _ = issue_cert(ca_p256, cn="host.example.com", out_dir=out)
+        cert = _load_cert(cert_path)
+        assert isinstance(cert.signature_hash_algorithm, hashes.SHA256)
+
+    def test_key_type_label_p256(self, ca_dir, tmp_path):
+        out = str(tmp_path / "out")
+        init_ca(str(tmp_path / "p256-ca"), cn="P256 CA", key_type="ecdsa-p256")
+        info = show_ca_info(str(tmp_path / "p256-ca"))
+        assert info["key_type"] == "ECDSA-SECP256R1"
+
+    def test_key_type_label_p384(self, tmp_path):
+        init_ca(str(tmp_path / "p384-ca"), cn="P384 CA", key_type="ecdsa-p384")
+        info = show_ca_info(str(tmp_path / "p384-ca"))
+        assert info["key_type"] == "ECDSA-SECP384R1"
 
     # --- Serial numbers ---
 

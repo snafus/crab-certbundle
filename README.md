@@ -328,7 +328,8 @@ Options:
   --name TEXT       Common Name for the CA  [default: CRAB Test CA]
   --org TEXT        Organisation name
   --days INTEGER    Validity period in days  [default: 3650]
-  --key-type TEXT   rsa2048 | rsa4096 | ed25519  [default: rsa2048]
+  --key-type TEXT   rsa2048 | rsa4096 | ecdsa-p256 | ecdsa-p384 | ed25519
+                    [default: rsa2048]
   --force           Overwrite an existing CA
   --add-to-profile  Print the crab.yaml snippet for adding this CA
                     as a local source in the named profile
@@ -354,7 +355,8 @@ crabctl cert issue --ca CA_DIR [OPTIONS]
                    Unprefixed values are auto-detected (IP vs DNS)
   --days INTEGER   Validity in days  [default: 365]
   --profile TEXT   server | client | grid-host  [default: server]
-  --key-type TEXT  rsa2048 | rsa4096 | ed25519  [default: rsa2048]
+  --key-type TEXT  rsa2048 | rsa4096 | ecdsa-p256 | ecdsa-p384 | ed25519
+                   [default: rsa2048]
   --out DIR        Output directory  [default: <ca-dir>/issued/]
   --cdp-url URL    CRL Distribution Point URL to embed in the cert
 ```
@@ -369,6 +371,19 @@ crabctl cert issue --ca CA_DIR [OPTIONS]
 
 `keyEncipherment` is omitted for Ed25519 keys (not applicable to that
 algorithm).
+
+**Key algorithm reference:**
+
+| `--key-type` | Algorithm | Security | Notes |
+|---|---|---|---|
+| `rsa2048` | RSA-2048 | ~112-bit | IGTF minimum; broad compatibility |
+| `rsa4096` | RSA-4096 | ~140-bit | Conservative choice; slower generation |
+| `ecdsa-p256` | ECDSA P-256 | ~128-bit | Recommended for new certs; universal TLS support |
+| `ecdsa-p384` | ECDSA P-384 | ~192-bit | NIST Suite B; used in some RI/federal contexts |
+| `ed25519` | Ed25519 | ~128-bit | Fastest; not yet in IGTF baseline |
+
+P-256 is the recommended default for test infrastructure. RSA-2048 is kept as
+the default for maximum compatibility with older IGTF middleware.
 
 **SAN auto-detection:**
 

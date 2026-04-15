@@ -39,6 +39,7 @@ from typing import Dict, List, Optional, Tuple
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec as _ec_mod
 from cryptography.hazmat.primitives.asymmetric import ed25519 as _ed25519_mod
 from cryptography.hazmat.primitives.asymmetric import rsa as _rsa_mod
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
@@ -50,7 +51,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 CERT_PROFILES = ("server", "client", "grid-host")
-KEY_TYPES = ("rsa2048", "rsa4096", "ed25519")
+KEY_TYPES = ("rsa2048", "rsa4096", "ecdsa-p256", "ecdsa-p384", "ed25519")
 
 REVOKE_REASONS = (
     "unspecified",
@@ -93,6 +94,10 @@ def _generate_key(key_type):
         return _rsa_mod.generate_private_key(public_exponent=65537, key_size=2048)
     if key_type == "rsa4096":
         return _rsa_mod.generate_private_key(public_exponent=65537, key_size=4096)
+    if key_type == "ecdsa-p256":
+        return _ec_mod.generate_private_key(_ec_mod.SECP256R1())
+    if key_type == "ecdsa-p384":
+        return _ec_mod.generate_private_key(_ec_mod.SECP384R1())
     if key_type == "ed25519":
         return _ed25519_mod.Ed25519PrivateKey.generate()
     raise PKIError(
@@ -101,12 +106,33 @@ def _generate_key(key_type):
 
 
 def _is_ed25519(key):
+    # Kept for backwards compatibility with any external callers.
     return isinstance(key, _ed25519_mod.Ed25519PrivateKey)
+
+
+def _no_key_encipherment(key):
+    # type: (...) -> bool
+    """
+    Return True when the key type does not support keyEncipherment.
+
+    keyEncipherment is an RSA-specific operation (used in RSA key exchange).
+    ECDSA and Ed25519 use ephemeral ECDH for key exchange instead, so the
+    bit must be absent from their KeyUsage extensions or some validators
+    will reject the certificate.
+    """
+    return not isinstance(key, _rsa_mod.RSAPrivateKey)
 
 
 def _sign_hash(key):
     """Return the hash algorithm for signing, or None for Ed25519."""
-    return None if _is_ed25519(key) else hashes.SHA256()
+    if isinstance(key, _ed25519_mod.Ed25519PrivateKey):
+        return None
+    if isinstance(key, _ec_mod.EllipticCurvePrivateKey):
+        # Use SHA-384 for P-384 (matched security level); SHA-256 for P-256
+        if isinstance(key.curve, _ec_mod.SECP384R1):
+            return hashes.SHA384()
+        return hashes.SHA256()
+    return hashes.SHA256()
 
 
 def _key_pem(key):
@@ -127,6 +153,8 @@ def _key_type_label(pub):
         return "Ed25519"
     if isinstance(pub, _rsa_mod.RSAPublicKey):
         return "RSA-{}".format(pub.key_size)
+    if isinstance(pub, _ec_mod.EllipticCurvePublicKey):
+        return "ECDSA-{}".format(pub.curve.name.upper())
     return type(pub).__name__
 
 
@@ -480,19 +508,20 @@ def _parse_san(value):
         return x509.DNSName(value)
 
 
-def _key_usage_for_profile(profile, is_ed25519_key):
+def _key_usage_for_profile(profile, no_key_encipherment):
     # type: (str, bool) -> x509.KeyUsage
     """
     Return the KeyUsage extension for *profile*.
 
-    Ed25519 keys do not support ``key_encipherment`` (RSA-specific
-    operation), so that bit is always False for Ed25519.
+    RSA keys use ``keyEncipherment`` for key exchange.  ECDSA and Ed25519
+    use ephemeral ECDH instead, so ``keyEncipherment`` must be absent from
+    their certificates or strict validators will reject them.
     """
     if profile in ("server", "grid-host"):
         return x509.KeyUsage(
             digital_signature=True,
             content_commitment=False,
-            key_encipherment=not is_ed25519_key,
+            key_encipherment=not no_key_encipherment,
             data_encipherment=False,
             key_agreement=False,
             key_cert_sign=False,
@@ -601,7 +630,7 @@ def issue_cert(
 
     key = _generate_key(key_type)
     pub = key.public_key()
-    is_ed = _is_ed25519(key)
+    no_enc = _no_key_encipherment(key)
 
     subject  = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
     serial   = ca.serial_db.next_serial()
@@ -627,7 +656,7 @@ def issue_cert(
             x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski),
             critical=False,
         )
-        .add_extension(_key_usage_for_profile(profile, is_ed), critical=True)
+        .add_extension(_key_usage_for_profile(profile, no_enc), critical=True)
         .add_extension(_eku_for_profile(profile), critical=False)
         .add_extension(x509.SubjectAlternativeName(san_objects), critical=False)
     )
