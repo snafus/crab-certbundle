@@ -127,7 +127,7 @@ step-ca/cfssl; the target is "working test CA in ten minutes".*
 - ✅ Debian/Ubuntu `.deb` package (Ubuntu 22.04 LTS and 24.04 LTS)
 - ✅ `crabctl --version` reports commit SHA when installed from source
 - ✅ Tox matrix extended to Python 3.12 and 3.13
-- 🔲 `CONTRIBUTING.md`
+- ✅ `CONTRIBUTING.md`
 
 ---
 
