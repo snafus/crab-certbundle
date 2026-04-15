@@ -33,6 +33,8 @@ directory that can be used directly by any software reading
 - JSON output for all list/diff/validate commands
 - Python 3.6.8+ compatible (Rocky 8 / EL8, Rocky 9 / EL9)
 - No dependency on OSG, VOMS, or grid middleware packages
+- **Built-in test CA** — `crabctl ca` / `crabctl cert` for generating
+  self-signed CAs and host certificates for lab and CI environments
 
 ---
 
@@ -246,6 +248,196 @@ profiles:
       exclude:
         - subject_regex: "CN=Some Deprecated CA.*"
 ```
+
+---
+
+---
+
+## CRAB-PKI: local test CA and certificate generation
+
+CRAB includes a lightweight CA for bootstrapping lab and CI environments —
+useful for XRootD/dCache test nodes, internal grid services, and any
+situation where you need a working PKI in minutes rather than days.
+
+> **For testing only.** For production PKI use step-ca, cfssl, or
+> HashiCorp Vault PKI. CRAB-PKI stores private keys as unencrypted PEM
+> files on disk.
+
+### Quick start
+
+```bash
+# 1. Create a self-signed root CA
+crabctl ca init ./my-ca --name "Lab Test CA" --org "ACME Lab"
+
+# 2. Issue a server certificate (CN auto-added as DNS SAN)
+crabctl cert issue --ca ./my-ca --cn host.example.com
+
+# 3. Issue a wildcard certificate
+crabctl cert issue --ca ./my-ca --cn "*.example.com" \
+    --san DNS:example.com
+
+# 4. Issue with extra SANs including an IP address
+crabctl cert issue --ca ./my-ca --cn host.example.com \
+    --san DNS:host.internal --san IP:10.0.0.1 --days 90
+
+# 5. Issue a grid-host cert (serverAuth + clientAuth EKU)
+crabctl cert issue --ca ./my-ca --cn xrootd.example.com \
+    --profile grid-host
+
+# 6. Issue a client cert
+crabctl cert issue --ca ./my-ca --cn alice \
+    --profile client --san EMAIL:alice@example.com
+
+# 7. Show CA details
+crabctl ca show ./my-ca
+crabctl ca show ./my-ca --json
+
+# 8. List issued certificates
+crabctl cert list --ca ./my-ca
+
+# 9. Revoke a certificate (regenerates CRL automatically)
+crabctl cert revoke --ca ./my-ca \
+    ./my-ca/issued/host.example.com-cert.pem \
+    --reason keyCompromise
+
+# 10. Show only revoked certificates
+crabctl cert list --ca ./my-ca --revoked
+```
+
+### CA directory layout
+
+```
+my-ca/
+  ca-cert.pem     Self-signed root CA certificate (mode 0644)
+  ca-key.pem      CA private key                  (mode 0600)
+  serial.db       Issued certificate log (JSON-lines)
+  crl.pem         Current CRL (written after first revocation)
+  issued/
+    host.example.com-cert.pem
+    host.example.com-key.pem   (mode 0600)
+```
+
+### `crabctl ca init`
+
+```
+crabctl ca init [CA_DIR] [OPTIONS]
+
+  CA_DIR      Directory to create (default: ./ca)
+
+Options:
+  --name TEXT       Common Name for the CA  [default: CRAB Test CA]
+  --org TEXT        Organisation name
+  --days INTEGER    Validity period in days  [default: 3650]
+  --key-type TEXT   rsa2048 | rsa4096 | ed25519  [default: rsa2048]
+  --force           Overwrite an existing CA
+  --add-to-profile  Print the crab.yaml snippet for adding this CA
+                    as a local source in the named profile
+```
+
+### `crabctl ca show`
+
+```
+crabctl ca show [CA_DIR] [--json]
+```
+
+Displays subject, key type, validity dates, fingerprint, issued/revoked
+counts, and whether a CRL is present.
+
+### `crabctl cert issue`
+
+```
+crabctl cert issue --ca CA_DIR [OPTIONS]
+
+  --cn TEXT        Common Name  [required]
+  --san TEXT       Subject Alternative Name (repeatable)
+                   Prefix: DNS: | IP: | EMAIL:
+                   Unprefixed values are auto-detected (IP vs DNS)
+  --days INTEGER   Validity in days  [default: 365]
+  --profile TEXT   server | client | grid-host  [default: server]
+  --key-type TEXT  rsa2048 | rsa4096 | ed25519  [default: rsa2048]
+  --out DIR        Output directory  [default: <ca-dir>/issued/]
+  --cdp-url URL    CRL Distribution Point URL to embed in the cert
+```
+
+**Profile summary:**
+
+| Profile | Key Usage | Extended Key Usage |
+|---|---|---|
+| `server` | `digitalSignature`, `keyEncipherment` | `serverAuth` |
+| `client` | `digitalSignature` | `clientAuth` |
+| `grid-host` | `digitalSignature`, `keyEncipherment` | `serverAuth`, `clientAuth` |
+
+`keyEncipherment` is omitted for Ed25519 keys (not applicable to that
+algorithm).
+
+**SAN auto-detection:**
+
+- If `--cn` contains a dot (e.g. `host.example.com`), it is automatically
+  added as a `DNS:` SAN. You do not need to repeat it with `--san`.
+- Wildcard CNs (e.g. `*.example.com`) are written as `DNS:*.example.com`
+  in the SAN extension. A wildcard does not cover the apex domain
+  (`example.com`) — add that separately with `--san DNS:example.com`.
+- CNs without a dot (e.g. bare hostnames or usernames) are not
+  auto-added; supply at least one `--san` in that case.
+
+**Wildcard example:**
+
+```bash
+# Covers *.example.com AND example.com
+crabctl cert issue --ca ./my-ca \
+    --cn "*.example.com" \
+    --san DNS:example.com
+```
+
+### `crabctl cert revoke`
+
+```
+crabctl cert revoke --ca CA_DIR CERT [--reason REASON]
+
+  CERT    Path to a PEM certificate previously issued by this CA
+
+  --reason  unspecified | keyCompromise | affiliationChanged |
+            superseded | cessationOfOperation
+            [default: unspecified]
+```
+
+The CA's CRL is regenerated atomically after every revocation. The CRL
+is written to `<ca-dir>/crl.pem`.
+
+### `crabctl cert list`
+
+```
+crabctl cert list --ca CA_DIR [--json] [--revoked]
+```
+
+Lists all certificates in the serial database. `--revoked` filters to
+revoked certs only. `--json` emits the raw serial-database records.
+
+### Adding your test CA to a crab profile
+
+After creating a CA, add it as a `local` source in your `crab.yaml` so
+that any software consuming the CRAB output directory will trust
+certificates issued by it:
+
+```yaml
+sources:
+  my-test-ca:
+    type: local
+    path: /path/to/my-ca/ca-cert.pem   # the CA certificate only
+
+profiles:
+  grid:
+    sources:
+      - igtf-classic
+      - my-test-ca          # include alongside IGTF anchors
+    output_path: /etc/grid-security/certificates
+    policy:
+      require_ca_flag: true
+      reject_expired: true
+```
+
+`crabctl ca init --add-to-profile PROFILE` prints the exact snippet to
+paste for a given profile name.
 
 ---
 

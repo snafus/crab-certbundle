@@ -183,3 +183,198 @@ class TestBuildPipeline:
         """crabctl exits non-zero when the config file does not exist."""
         result = _crabctl("--config", str(tmp_path / "nonexistent.yaml"), "build")
         assert result.returncode != 0
+
+
+class TestPKICLI:
+    """Integration tests for crabctl ca / cert commands."""
+
+    def test_ca_init_creates_files(self, tmp_path):
+        ca_dir = str(tmp_path / "my-ca")
+        result = _crabctl("-q", "ca", "init", ca_dir, "--name", "Integration Test CA")
+        assert result.returncode == 0, result.stderr
+        assert os.path.isfile(os.path.join(ca_dir, "ca-cert.pem"))
+        assert os.path.isfile(os.path.join(ca_dir, "ca-key.pem"))
+        assert os.path.isdir(os.path.join(ca_dir, "issued"))
+
+    def test_ca_init_key_mode(self, tmp_path):
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir)
+        import stat
+        mode = stat.S_IMODE(os.stat(os.path.join(ca_dir, "ca-key.pem")).st_mode)
+        assert mode == 0o600
+
+    def test_ca_show_text(self, tmp_path):
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir, "--name", "Show Test CA")
+        result = _crabctl("-q", "ca", "show", ca_dir)
+        assert result.returncode == 0, result.stderr
+        assert "Show Test CA" in result.stdout
+        assert "RSA-2048" in result.stdout
+        assert "Issued certs  : 0" in result.stdout
+
+    def test_ca_show_json(self, tmp_path):
+        import json
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir, "--name", "JSON CA")
+        result = _crabctl("-q", "ca", "show", ca_dir, "--json")
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["key_type"] == "RSA-2048"
+        assert data["issued_count"] == 0
+
+    def test_ca_init_ed25519(self, tmp_path):
+        ca_dir = str(tmp_path / "ed-ca")
+        result = _crabctl("-q", "ca", "init", ca_dir, "--key-type", "ed25519")
+        assert result.returncode == 0, result.stderr
+        info = _crabctl("-q", "ca", "show", ca_dir, "--json")
+        import json
+        assert json.loads(info.stdout)["key_type"] == "Ed25519"
+
+    def test_ca_init_rejects_existing(self, tmp_path):
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir)
+        result = _crabctl("-q", "ca", "init", ca_dir)
+        assert result.returncode != 0
+        assert "already exists" in result.stderr
+
+    def test_ca_init_force(self, tmp_path):
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir, "--name", "CA1")
+        result = _crabctl("-q", "ca", "init", ca_dir, "--name", "CA2", "--force")
+        assert result.returncode == 0, result.stderr
+
+    def test_cert_issue_server(self, tmp_path):
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir)
+        result = _crabctl("-q", "cert", "issue", "--ca", ca_dir, "--cn", "host.example.com")
+        assert result.returncode == 0, result.stderr
+        cert_path = os.path.join(ca_dir, "issued", "host.example.com-cert.pem")
+        assert os.path.isfile(cert_path)
+
+    def test_cert_issue_wildcard(self, tmp_path):
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir)
+        result = _crabctl("-q", "cert", "issue",
+                          "--ca", ca_dir,
+                          "--cn", "*.example.com",
+                          "--san", "DNS:example.com")
+        assert result.returncode == 0, result.stderr
+        # Verify SANs with openssl
+        cert_path = os.path.join(ca_dir, "issued", "_.example.com-cert.pem")
+        assert os.path.isfile(cert_path)
+        verify = subprocess.run(
+            ["openssl", "verify", "-CAfile", os.path.join(ca_dir, "ca-cert.pem"), cert_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        assert verify.returncode == 0, verify.stderr.decode()
+
+    def test_cert_issue_grid_host(self, tmp_path):
+        from cryptography import x509
+        from cryptography.x509.oid import ExtendedKeyUsageOID
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir)
+        result = _crabctl("-q", "cert", "issue",
+                          "--ca", ca_dir,
+                          "--cn", "xrootd.example.com",
+                          "--profile", "grid-host")
+        assert result.returncode == 0, result.stderr
+        cert_path = os.path.join(ca_dir, "issued", "xrootd.example.com-cert.pem")
+        with open(cert_path, "rb") as fh:
+            cert = x509.load_pem_x509_certificate(fh.read())
+        eku = list(cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value)
+        assert ExtendedKeyUsageOID.SERVER_AUTH in eku
+        assert ExtendedKeyUsageOID.CLIENT_AUTH in eku
+
+    def test_cert_list_and_revoke(self, tmp_path):
+        import json
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir)
+        _crabctl("-q", "cert", "issue", "--ca", ca_dir, "--cn", "host.example.com")
+
+        list_result = _crabctl("-q", "cert", "list", "--ca", ca_dir, "--json")
+        assert list_result.returncode == 0
+        records = json.loads(list_result.stdout)
+        assert len(records) == 1
+        assert records[0]["revoked"] is False
+
+        cert_path = os.path.join(ca_dir, "issued", "host.example.com-cert.pem")
+        revoke_result = _crabctl("-q", "cert", "revoke",
+                                 "--ca", ca_dir, cert_path,
+                                 "--reason", "superseded")
+        assert revoke_result.returncode == 0, revoke_result.stderr
+        assert os.path.isfile(os.path.join(ca_dir, "crl.pem"))
+
+        list_after = _crabctl("-q", "cert", "list", "--ca", ca_dir, "--json")
+        records_after = json.loads(list_after.stdout)
+        assert records_after[0]["revoked"] is True
+        assert records_after[0]["revoke_reason"] == "superseded"
+
+    def test_cert_revoke_double_raises(self, tmp_path):
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir)
+        _crabctl("-q", "cert", "issue", "--ca", ca_dir, "--cn", "host.example.com")
+        cert_path = os.path.join(ca_dir, "issued", "host.example.com-cert.pem")
+        _crabctl("-q", "cert", "revoke", "--ca", ca_dir, cert_path)
+        result = _crabctl("-q", "cert", "revoke", "--ca", ca_dir, cert_path)
+        assert result.returncode != 0
+        assert "already revoked" in result.stderr
+
+
+class TestPKIPipelineRoundTrip:
+    """
+    Full round-trip: generate a test CA with crab-pki, add its cert as a
+    local source in a crab.yaml config, build a CApath directory, and
+    validate that the CA cert appears in the output.
+    """
+
+    def test_ca_cert_appears_in_capath_build(self, tmp_path):
+        """
+        A CA created with 'crabctl ca init' can be added as a local source
+        and will appear in the built CApath directory.
+        """
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir, "--name", "Round-trip Test CA")
+
+        ca_cert_path = os.path.join(ca_dir, "ca-cert.pem")
+        output_dir = str(tmp_path / "output")
+        staging_dir = str(tmp_path / "staging")
+        config_path = str(tmp_path / "crab.yaml")
+
+        _write_config(config_path, ca_dir, output_dir, staging_dir)
+
+        build = _crabctl("--config", config_path, "-q", "build")
+        assert build.returncode == 0, "build failed:\n" + build.stderr
+
+        hash_files = [f for f in os.listdir(output_dir)
+                      if len(f) == 10 and f.endswith(".0")]
+        assert len(hash_files) == 1, \
+            "expected 1 hashed cert in output; got: {}".format(hash_files)
+
+        validate = _crabctl("--config", config_path, "-q",
+                            "validate", "--no-openssl")
+        assert validate.returncode == 0, "validate failed:\n" + validate.stderr
+
+    def test_issued_cert_verifies_against_capath(self, tmp_path):
+        """
+        A cert issued by the test CA can be verified with openssl verify
+        using the built CApath directory.
+        """
+        ca_dir = str(tmp_path / "my-ca")
+        _crabctl("-q", "ca", "init", ca_dir, "--name", "Verify Test CA")
+        _crabctl("-q", "cert", "issue", "--ca", ca_dir, "--cn", "host.example.com")
+
+        output_dir = str(tmp_path / "output")
+        config_path = str(tmp_path / "crab.yaml")
+        _write_config(config_path, ca_dir, output_dir, str(tmp_path / "staging"))
+
+        build = _crabctl("--config", config_path, "-q", "build")
+        assert build.returncode == 0, build.stderr
+
+        cert_path = os.path.join(ca_dir, "issued", "host.example.com-cert.pem")
+        verify = subprocess.run(
+            ["openssl", "verify", "-CApath", output_dir, cert_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert verify.returncode == 0, \
+            "openssl verify failed: " + verify.stderr.decode()
