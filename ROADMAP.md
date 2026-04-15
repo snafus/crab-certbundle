@@ -156,7 +156,7 @@ hooks.*
 
 ---
 
-## 🔲 0.5.0 — CRAB-PKI: Self-Signed CA and Host Certificate Generation
+## ⚠️ 0.5.0 — CRAB-PKI: Self-Signed CA and Host Certificate Generation
 
 *Goal: allow CRAB to bootstrap and operate a minimal internal or test PKI
 suitable for research infrastructure nodes — data-transfer endpoints (XRootD,
@@ -179,22 +179,24 @@ dependency on external tools for common RI bootstrapping workflows.
 
 **Scope of 0.5.0:**
 
-- 🔲 `crab ca init [--name NAME] [--days N] [--out DIR]`
-  — generates a self-signed root CA (RSA-4096 or Ed25519); writes
-  `ca-cert.pem`, `ca-key.pem` (mode 0600) into `DIR`
-- 🔲 `crab ca show [CA_DIR]` — pretty-print CA certificate details; JSON mode
-- 🔲 `crab cert issue --ca CA_DIR --cn HOSTNAME [--san …] [--days N]`
+- ✅ `crabctl ca init [CA_DIR] [--name NAME] [--org ORG] [--days N] [--key-type TYPE] [--force]`
+  — generates a self-signed root CA (RSA-2048/4096 or Ed25519); writes
+  `ca-cert.pem`, `ca-key.pem` (mode 0600) into `CA_DIR`
+- ✅ `crabctl ca show [CA_DIR] [--json]` — pretty-print CA certificate details; JSON mode
+- ✅ `crabctl cert issue --ca CA_DIR --cn HOSTNAME [--san …] [--days N] [--profile PROFILE] [--cdp-url URL]`
   — issues a TLS server certificate signed by the local CA; writes
-  `HOSTNAME-cert.pem` and `HOSTNAME-key.pem`
-- 🔲 `crab cert revoke --ca CA_DIR CERT`
+  `HOSTNAME-cert.pem` and `HOSTNAME-key.pem` (mode 0600)
+- ✅ `crabctl cert revoke --ca CA_DIR CERT [--reason REASON]`
   — revokes a certificate and regenerates the local CRL
-- 🔲 `crab cert list --ca CA_DIR` — list issued certificates and their status
-- 🔲 Auto-add generated CA to a named CRAB profile's source list
-  (`--add-to-profile`)
-- 🔲 Serial number database (`serial.db`, JSON lines) for issued certificates
-- 🔲 Key storage: PEM files only; no PKCS#11 or HSM in this milestone
-- 🔲 Certificate profiles: `server`, `client`, `grid-host` (adds
-  `gridFTP`/`XRootD` EKU OIDs used by some RI middleware)
+- ✅ `crabctl cert list --ca CA_DIR [--json] [--revoked]` — list issued certificates and their status
+- ✅ `--add-to-profile PROFILE` on `ca init` — prints the crab.yaml snippet
+  to register the CA as a local source in the named profile
+- ✅ Serial number database (`serial.db`, JSON lines) for issued certificates;
+  `fcntl.flock` for process-safety on Linux/macOS
+- ✅ Key storage: PEM (PKCS#8 format, supports RSA and Ed25519); no PKCS#11 or HSM
+- ✅ Certificate profiles: `server` (serverAuth), `client` (clientAuth),
+  `grid-host` (serverAuth + clientAuth for XRootD/dCache/gfal2)
+- ✅ CRL Distribution Point URL embeddable per cert (`--cdp-url`)
 
 **Out of scope for 0.5.0 (may revisit later):**
 

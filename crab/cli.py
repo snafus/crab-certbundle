@@ -31,6 +31,12 @@ from crab.sources import build_source
 from crab.crl import CRLManager
 from crab.output import OutputProfile, build_output
 from crab.policy import PolicyEngine
+from crab.pki import (
+    init_ca, issue_cert, revoke_cert, generate_crl,
+    show_ca_info, list_issued,
+    CERT_PROFILES, KEY_TYPES, REVOKE_REASONS,
+    PKIError, CADirectory,
+)
 from crab.rehash import CERT_HASH_FILE_RE
 from crab.reporting import (
     diff_cert_sets,
@@ -678,6 +684,271 @@ def _find_default_config():
         if os.path.isfile(path):
             return path
     return None
+
+
+# ---------------------------------------------------------------------------
+# ca — CA management commands
+# ---------------------------------------------------------------------------
+
+@main.group("ca")
+def ca_group():
+    """Create and inspect a local test CA.
+
+    These commands operate on a CA directory and do not require a crab.yaml
+    config file.
+
+    \b
+    Quick start:
+        crabctl ca init ./my-ca
+        crabctl ca show ./my-ca
+        crabctl cert issue --ca ./my-ca --cn host.example.com
+    """
+
+
+@ca_group.command("init")
+@click.argument("ca_dir", default="./ca", metavar="[CA_DIR]")
+@click.option("--name", default="CRAB Test CA", show_default=True,
+              help="Common Name for the CA certificate.")
+@click.option("--org", default=None, metavar="TEXT",
+              help="Organisation name (optional).")
+@click.option("--days", default=3650, show_default=True, type=int,
+              help="Validity period in days.")
+@click.option("--key-type", default="rsa2048", show_default=True,
+              type=click.Choice(KEY_TYPES),
+              help="Key algorithm.")
+@click.option("--force", is_flag=True,
+              help="Overwrite an existing CA without prompting.")
+@click.option("--add-to-profile", default=None, metavar="PROFILE",
+              help="Print the crab.yaml snippet to add this CA as a source in PROFILE.")
+@click.pass_context
+def ca_init(ctx, ca_dir, name, org, days, key_type, force, add_to_profile):
+    """
+    Create a new self-signed root CA in CA_DIR.
+
+    \b
+    Examples:
+        crabctl ca init ./my-ca --name "Lab Test CA" --org "ACME Lab"
+        crabctl ca init ./my-ca --key-type ed25519 --days 730
+        crabctl ca init ./my-ca --force
+    """
+    try:
+        cert_path, key_path = init_ca(
+            ca_dir, cn=name, org=org, days=days, key_type=key_type, force=force
+        )
+    except PKIError as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+
+    click.echo("CA initialised:")
+    click.echo("  Certificate : {}".format(cert_path))
+    click.echo("  Private key : {}  (mode 0600)".format(key_path))
+    click.echo("  Name        : {}".format(name))
+    click.echo("  Key type    : {}".format(key_type))
+    click.echo("  Valid for   : {} days".format(days))
+
+    if add_to_profile:
+        abs_cert = os.path.abspath(cert_path)
+        source_name = os.path.basename(os.path.abspath(ca_dir)).replace(" ", "-")
+        click.echo("")
+        click.echo(
+            "To add this CA as source '{src}' to profile '{prof}', insert the\n"
+            "following into the 'sources:' block in your crab.yaml, then add\n"
+            "'{src}' to the profile's sources list:\n"
+            "\n"
+            "  {src}:\n"
+            "    type: local\n"
+            "    path: {cert}\n".format(src=source_name, prof=add_to_profile, cert=abs_cert)
+        )
+
+
+@ca_group.command("show")
+@click.argument("ca_dir", default="./ca", metavar="[CA_DIR]")
+@click.option("--json", "output_json", is_flag=True, help="Output JSON.")
+def ca_show(ca_dir, output_json):
+    """
+    Display details about the CA in CA_DIR.
+
+    \b
+    Examples:
+        crabctl ca show ./my-ca
+        crabctl ca show ./my-ca --json
+    """
+    try:
+        info = show_ca_info(ca_dir)
+    except PKIError as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+
+    if output_json:
+        click.echo(json.dumps(info, indent=2))
+        return
+
+    click.echo("CA directory  : {}".format(info["ca_dir"]))
+    click.echo("Subject       : {}".format(info["subject"]))
+    click.echo("Key type      : {}".format(info["key_type"]))
+    click.echo("Valid from    : {}".format(info["not_before"]))
+    click.echo("Valid until   : {}".format(info["not_after"]))
+    click.echo("Fingerprint   : {}".format(info["fingerprint_sha256"]))
+    click.echo("Issued certs  : {}  ({} revoked)".format(
+        info["issued_count"], info["revoked_count"]
+    ))
+    click.echo("CRL present   : {}".format("yes" if info["crl_exists"] else "no"))
+
+
+# ---------------------------------------------------------------------------
+# cert — certificate management commands
+# ---------------------------------------------------------------------------
+
+@main.group("cert")
+def cert_group():
+    """Issue and manage certificates signed by a local CA.
+
+    These commands operate on a CA directory created with ``crabctl ca init``.
+    They do not require a crab.yaml config file.
+    """
+
+
+@cert_group.command("issue")
+@click.option("--ca", "ca_dir", required=True, metavar="CA_DIR",
+              help="Path to the CA directory.")
+@click.option("--cn", required=True, metavar="NAME",
+              help="Common Name (hostname for server/grid-host; username for client).")
+@click.option("--san", "sans", multiple=True, metavar="SAN",
+              help="Subject Alternative Name (repeatable).  "
+                   "Prefix: DNS: IP: EMAIL:  Default: DNS.")
+@click.option("--days", default=365, show_default=True, type=int,
+              help="Validity period in days.")
+@click.option("--profile", default="server", show_default=True,
+              type=click.Choice(CERT_PROFILES),
+              help="Certificate profile.")
+@click.option("--key-type", default="rsa2048", show_default=True,
+              type=click.Choice(KEY_TYPES),
+              help="Key algorithm.")
+@click.option("--out", "out_dir", default=None, metavar="DIR",
+              help="Output directory (default: <ca-dir>/issued/).")
+@click.option("--cdp-url", default=None, metavar="URL",
+              help="CRL Distribution Point URL to embed in the certificate.")
+def cert_issue(ca_dir, cn, sans, days, profile, key_type, out_dir, cdp_url):
+    """
+    Issue a certificate signed by the CA in CA_DIR.
+
+    The Common Name is automatically added as a DNS SAN when it looks like
+    a hostname (contains a dot).  Extra SANs can be added with --san.
+
+    \b
+    Examples:
+        crabctl cert issue --ca ./my-ca --cn host.example.com
+        crabctl cert issue --ca ./my-ca --cn host.example.com \\
+            --san DNS:alt.example.com --san IP:10.0.0.1 --days 90
+        crabctl cert issue --ca ./my-ca --cn myuser --profile client
+        crabctl cert issue --ca ./my-ca --cn xrootd.example.com --profile grid-host
+    """
+    try:
+        cert_path, key_path = issue_cert(
+            ca_dir,
+            cn=cn,
+            sans=list(sans),
+            days=days,
+            profile=profile,
+            key_type=key_type,
+            out_dir=out_dir,
+            cdp_url=cdp_url,
+        )
+    except PKIError as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+
+    click.echo("Certificate issued:")
+    click.echo("  Certificate : {}".format(cert_path))
+    click.echo("  Private key : {}  (mode 0600)".format(key_path))
+    click.echo("  CN          : {}".format(cn))
+    click.echo("  Profile     : {}".format(profile))
+    click.echo("  Valid for   : {} days".format(days))
+
+
+@cert_group.command("revoke")
+@click.option("--ca", "ca_dir", required=True, metavar="CA_DIR",
+              help="Path to the CA directory.")
+@click.argument("cert_file", metavar="CERT")
+@click.option("--reason", default="unspecified", show_default=True,
+              type=click.Choice(REVOKE_REASONS),
+              help="Revocation reason.")
+def cert_revoke(ca_dir, cert_file, reason):
+    """
+    Revoke CERT and regenerate the CA's CRL.
+
+    CERT must be a PEM file previously issued by the CA in CA_DIR.
+
+    \b
+    Examples:
+        crabctl cert revoke --ca ./my-ca ./my-ca/issued/host.example.com-cert.pem
+        crabctl cert revoke --ca ./my-ca ./my-ca/issued/host-cert.pem \\
+            --reason keyCompromise
+    """
+    try:
+        revoke_cert(ca_dir, cert_file, reason=reason)
+    except PKIError as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+    except FileNotFoundError as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+
+    ca = CADirectory(ca_dir)
+    click.echo("Certificate revoked.")
+    click.echo("  CRL updated : {}".format(ca.crl_path))
+    click.echo("  Reason      : {}".format(reason))
+
+
+@cert_group.command("list")
+@click.option("--ca", "ca_dir", required=True, metavar="CA_DIR",
+              help="Path to the CA directory.")
+@click.option("--json", "output_json", is_flag=True, help="Output JSON.")
+@click.option("--revoked", "show_revoked", is_flag=True,
+              help="Show only revoked certificates.")
+def cert_list(ca_dir, output_json, show_revoked):
+    """
+    List certificates issued by the CA in CA_DIR.
+
+    \b
+    Examples:
+        crabctl cert list --ca ./my-ca
+        crabctl cert list --ca ./my-ca --revoked
+        crabctl cert list --ca ./my-ca --json
+    """
+    try:
+        records = list_issued(ca_dir)
+    except PKIError as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+
+    if show_revoked:
+        records = [r for r in records if r.get("revoked")]
+
+    if output_json:
+        click.echo(json.dumps(records, indent=2))
+        return
+
+    if not records:
+        click.echo("No certificates issued yet." if not show_revoked
+                   else "No revoked certificates.")
+        return
+
+    for rec in records:
+        status = "REVOKED ({})".format(rec.get("revoke_reason", "?")) \
+            if rec.get("revoked") else "valid"
+        click.echo("  #{:<4}  {:<35}  {}  {}  [{}]".format(
+            rec["serial"],
+            rec["cn"][:35],
+            rec["issued_at"][:10],
+            rec["expires_at"][:10],
+            status,
+        ))
+
+    click.echo("\nTotal: {}  Revoked: {}".format(
+        len(records),
+        sum(1 for r in records if r.get("revoked")),
+    ))
 
 
 if __name__ == "__main__":
