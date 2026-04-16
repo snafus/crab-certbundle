@@ -147,10 +147,9 @@ hooks.*
   directories (cert count, oldest/newest expiry, CRL freshness)
 - 🔲 Exit code 3 — "build succeeded but policy warnings present"; opt-in via
   `--strict-warnings` (requires ternary `PolicyOutcome` from 0.2.0)
-- 🔲 **Parallel CRL fetching** — `ThreadPoolExecutor`-backed fetch loop in
-  `CRLManager.update_crls`; configurable `crl.max_workers`; reuse a persistent
-  `requests.Session`. Currently O(n) serial fetches with up to 80 CAs in IGTF
-  classic — worst-case 40 min at 30 s timeout each.
+- ✅ **Parallel CRL fetching** — `ThreadPoolExecutor`-backed fetch loop in
+  `CRLManager.update_crls`; configurable `crl.max_workers` (default 8);
+  persistent `requests.Session` shared across workers for connection reuse.
 - 🔲 Nagios/Icinga-compatible `check_crab` wrapper script
 
 ---
