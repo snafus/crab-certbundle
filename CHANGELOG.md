@@ -9,30 +9,53 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.3.0] — 2026-04-16
+
 ### Added
 
-- `IGTFSource` URL mode now caches downloaded tarballs to disk (defaulting to
-  the system temp directory) and performs conditional GETs using
-  `If-None-Match` / `If-Modified-Since` headers, avoiding redundant downloads
-  when the server supports ETags or Last-Modified.
-- `cache_dir` config key for `IGTFSource` to control where tarballs are cached
-  (previously accepted but silently ignored).
-- `cache_ttl_days` config key (default: 30) — cache files in `cache_dir`
-  older than this many days are automatically evicted when a new version is
-  written; set to 0 to disable eviction.
-- `cache_pinned` config key (default: false) — when true, the cached copy is
-  returned immediately without any network request; useful for air-gapped
-  deployments or reproducible builds locked to a specific IGTF version.
-- `download_with_cache` in `crab.sources.http` now exposes
-  `cache_ttl_days` and `cache_pinned` parameters.
-- `_evict_stale_cache` helper function to clean up superseded `.tar.gz` /
-  `.meta` file pairs from the cache directory.
-- `output_format: bundle` profile option — writes all accepted certificates
-  as a single concatenated PEM file instead of an OpenSSL CApath directory.
-  The bundle is sorted by fingerprint for deterministic output, deduplicated,
-  and written atomically via `tempfile.mkstemp()` + `os.replace()`, replacing
-  any existing file without a window where the path is absent.
-  `output_format: capath` remains the default and is fully unchanged.
+- **`crabctl status`** — new command that reads profile output directories
+  without network access and reports: cert count, expired/expiring-soon
+  counts, earliest expiry (with subject), CRL file count, CRL freshness
+  warnings (via `CRLManager.validate_crls`), and last-built time (directory
+  mtime). `--json` flag emits a machine-readable list. Exits 0 when all
+  profiles are healthy, 1 when any are degraded or missing.
+- **`--log-format json`** — new global CLI flag (and `logging.format: json`
+  config key) enabling structured JSON logging. Each log record is emitted as
+  a single-line JSON object with fields `timestamp` (ISO-8601 UTC with ms),
+  `level`, `logger`, `message`, and `exception` (when present). CLI flag
+  takes priority over config; the `text` format is unchanged. Invalid format
+  values are rejected by config validation.
+- **`--strict-warnings`** on `build` and `refresh` — exits 3 when the build
+  succeeds but policy `WARN` outcomes or CRL fetch failures are present.
+  Errors still exit 1 (takes priority). Exit code 3 is the hook for future
+  `warn:` policy rules (0.4.0) and Prometheus alerting.
+- **Parallel CRL fetching** — `CRLManager.update_crls` now uses a
+  `ThreadPoolExecutor` (configurable `crl.max_workers`, default 8) with a
+  shared `requests.Session` for connection pooling. A `threading.Lock`
+  guards result accumulation. Dry-run path remains serial.
+- `PolicyEngine.count_warnings(cert_infos)` — counts certs that would
+  receive a `WARN` outcome without modifying filter results; used by
+  `--strict-warnings`.
+- `crab/logfmt.py` — `JsonFormatter` and `make_formatter(fmt, with_time)`
+  factory extracted as a standalone module.
+- `crab/status.py` — `ProfileStatus`, `collect_status()`,
+  `render_status_text()` extracted as a standalone module.
+- `runner` and `cli_env` pytest fixtures promoted to root `conftest.py`
+  (previously only in `test_cli.py`).
+- Integration tests for CRL fetching (`TestFetchCRLsIntegration`, 6 tests):
+  dry-run, live fetch, PEM format verification, parallel (4 CAs), missing
+  CDP URL, server-down soft failure.
+
+### Changed
+
+- `_build_profile` now returns `(errors, warned)` tuple instead of a bare
+  `int`; callers (`build`, `refresh`) updated accordingly.
+- `crl.max_workers` added to JSON Schema `crl_config` definition.
+- `logging.format` added to JSON Schema `logging_config` definition.
+- ROADMAP: `crab status` corrected to `crabctl status` throughout; Prometheus
+  and Nagios items moved to Future section.
 
 ---
 

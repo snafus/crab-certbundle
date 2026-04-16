@@ -12,7 +12,7 @@
 #     --define "_sourcedir $(pwd)/rpmbuild/SOURCES"
 
 Name:           crab-certbundle
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        OpenSSL-style CA certificate directory builder for research infrastructure
 
@@ -172,6 +172,11 @@ install -m 0644 examples/*.yaml %{buildroot}%{_datadir}/%{name}/examples/
 %systemd_postun_with_restart crabctl.timer
 
 %changelog
+* Thu Apr 16 2026 snafus <snafus@users.noreply.github.com> - 0.3.0-1
+- Operational observability: crabctl status, --log-format json, --strict-warnings exit code 3
+- Parallel CRL fetching via ThreadPoolExecutor (max_workers configurable)
+- 749 tests passing across EL8/EL9 and Ubuntu 22.04/24.04
+
 * Wed Apr 15 2026 snafus <snafus@users.noreply.github.com> - 0.2.0-1
 - CRAB-PKI: crabctl ca/cert commands (self-signed CA, host certs, revocation)
 - JSON Schema for crab.yaml; ternary PolicyOutcome; CRL validation in pipeline

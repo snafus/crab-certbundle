@@ -70,8 +70,8 @@ no `tomllib`, no `dict[str,str]` generic syntax).
 ```bash
 # Build the .rpm (requires rpmbuild, python3-pip, gcc, openssl-devel, libffi-devel)
 mkdir -p rpmbuild/SOURCES
-git archive --format=tar.gz --prefix=crab-certbundle-0.2.0/ HEAD \
-    > rpmbuild/SOURCES/crab-certbundle-0.2.0.tar.gz
+git archive --format=tar.gz --prefix=crab-certbundle-0.3.0/ HEAD \
+    > rpmbuild/SOURCES/crab-certbundle-0.3.0.tar.gz
 rpmbuild -ba packaging/rpm/crab-certbundle.spec \
     --define "_topdir $(pwd)/rpmbuild" \
     --define "_sourcedir $(pwd)/rpmbuild/SOURCES"
@@ -87,7 +87,7 @@ sudo apt-get install -y dpkg-dev debhelper python3-pip gcc libssl-dev libffi-dev
 
 # Build the .deb
 bash packaging/deb/build-deb.sh
-# → debbuild/crab-certbundle_0.2.0-1_amd64.deb
+# → debbuild/crab-certbundle_0.3.0-1_amd64.deb
 
 # Install
 sudo dpkg -i debbuild/crab-certbundle_*_amd64.deb
@@ -134,16 +134,24 @@ crabctl --config /etc/crab/config.yaml validate
 ## CLI reference
 
 ```
-crabctl [--config FILE] [--verbose] [--quiet] COMMAND [ARGS]
+crabctl [--config FILE] [--verbose] [--quiet] [--log-format text|json] COMMAND [ARGS]
 
 Commands:
   build         Build one or more output profiles.
+  refresh       Fetch CRLs then rebuild (equivalent to fetch-crls + build).
   validate      Validate one or more CApath directories.
   diff          Show changes between current output and a fresh build.
   list          List certificates in a source, profile, or directory.
   fetch-crls    Fetch or refresh CRLs for a profile.
+  status        Report cert counts, expiry, and CRL freshness without network I/O.
   show-config   Dump the resolved configuration.
 ```
+
+`--log-format json` emits one JSON object per log line with fields
+`timestamp` (ISO-8601 UTC with ms), `level`, `logger`, `message`, and
+`exception` (when present). Useful for forwarding to log aggregators.
+The format can also be set globally via `logging.format: json` in
+`crab.yaml`; the CLI flag takes priority.
 
 ### build
 
@@ -159,7 +167,14 @@ crabctl build --dry-run
 
 # Print source/policy report
 crabctl build --report
+
+# Exit 3 if any policy warnings or CRL fetch failures occur
+crabctl build --strict-warnings
 ```
+
+`--strict-warnings` is intended for CI and monitoring hooks. Exit codes:
+0 = success, 1 = errors, 3 = success with warnings (policy `WARN` outcomes
+or CRL fetch failures). Exit 1 takes priority over exit 3.
 
 ### validate
 
@@ -221,6 +236,38 @@ crabctl fetch-crls grid
 # Dry run — show URLs without downloading
 crabctl fetch-crls --dry-run
 ```
+
+### refresh
+
+Convenience command: fetch CRLs then rebuild all affected profiles in one
+step. Equivalent to running `fetch-crls` followed by `build`.
+
+```bash
+crabctl refresh
+crabctl refresh grid
+crabctl refresh --dry-run
+crabctl refresh --strict-warnings   # exit 3 on warnings
+```
+
+### status
+
+Read output directories without any network access and report cert counts,
+expiry information, CRL freshness, and last-built time. Useful for monitoring
+and dashboards.
+
+```bash
+# Status of all profiles
+crabctl status
+
+# Machine-readable JSON output
+crabctl status --json
+```
+
+Exit codes: 0 = all profiles healthy, 1 = any profile degraded or missing.
+
+A profile is **healthy** when its output directory exists, contains at least
+one certificate, no certificates are expired, and no CRL staleness warnings
+are present.
 
 ---
 

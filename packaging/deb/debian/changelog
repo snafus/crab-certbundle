@@ -1,3 +1,15 @@
+crab-certbundle (0.3.0-1) unstable; urgency=medium
+
+  * 0.3.0 release: operational observability milestone.
+    - crabctl status: cert counts, expiry, CRL freshness, last-built time; --json
+    - --log-format json: structured JSON logging (one object per line); also
+      configurable via logging.format in crab.yaml
+    - --strict-warnings on build/refresh: exits 3 on policy WARN or CRL failures
+    - Parallel CRL fetching (ThreadPoolExecutor, max_workers configurable)
+    - 749 tests passing across EL8/EL9, Ubuntu 22.04/24.04
+
+ -- SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>  Thu, 16 Apr 2026 00:00:00 +0000
+
 crab-certbundle (0.2.0-1) unstable; urgency=medium
 
   * 0.2.0 release: CRAB-PKI (crabctl ca/cert commands), JSON Schema for
