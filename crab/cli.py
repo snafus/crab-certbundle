@@ -24,7 +24,7 @@ from typing import List, Optional
 
 import click
 
-from crab import __version__
+from crab import __version__, __commit__
 from crab.cert import parse_pem_file
 from crab.config import load_config, ConfigError
 from crab.sources import build_source
@@ -62,8 +62,14 @@ _CONFIG_SEARCH = [
 # Root group
 # ---------------------------------------------------------------------------
 
+_version_string = (
+    "{} ({})".format(__version__, __commit__)
+    if __commit__ != "unknown"
+    else __version__
+)
+
 @click.group()
-@click.version_option(__version__, prog_name="crabctl")
+@click.version_option(_version_string, prog_name="crabctl")
 @click.option(
     "--config", "-c",
     default=None,

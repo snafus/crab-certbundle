@@ -58,7 +58,44 @@ class TestVersion:
     def test_version_flag(self, runner):
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
-        assert "0.1.0" in result.output
+        assert "crabctl" in result.output
+        assert "0.2.0" in result.output
+
+    def test_version_includes_commit(self, runner):
+        """Version output includes a commit SHA when one is available."""
+        from crab import __commit__
+        result = runner.invoke(main, ["--version"])
+        assert result.exit_code == 0
+        if __commit__ != "unknown":
+            assert __commit__ in result.output
+        else:
+            # Unknown is acceptable (e.g. installed from a plain tarball).
+            assert "0.2.0" in result.output
+
+    def test_commit_is_resolved(self):
+        """__commit__ is a non-empty string (SHA or 'unknown')."""
+        from crab import __commit__
+        assert isinstance(__commit__, str)
+        assert len(__commit__) > 0
+        assert not __commit__.startswith("$Format:")
+
+    def test_resolve_commit_unknown_fallback(self, tmp_path, monkeypatch):
+        """_resolve_commit() returns 'unknown' when git is absent and
+        _commit.py contains the unsubstituted placeholder."""
+        import importlib
+        import crab
+
+        # Patch _commit so it looks like an unsubstituted archive file.
+        monkeypatch.setattr("crab._commit.__commit__", "$Format:%h$", raising=False)
+
+        # Make git unavailable.
+        import subprocess as _sp
+        def _fail(*a, **kw):
+            raise FileNotFoundError("git not found")
+        monkeypatch.setattr(_sp, "check_output", _fail)
+
+        result = crab._resolve_commit()
+        assert result == "unknown"
 
 
 # ---------------------------------------------------------------------------
