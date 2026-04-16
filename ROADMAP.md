@@ -123,7 +123,6 @@ step-ca/cfssl; the target is "working test CA in ten minutes".*
 
 ### Packaging and distribution (remaining)
 
-- 🔲 PyPI release (`crabctl` package name)
 - ✅ Debian/Ubuntu `.deb` package (Ubuntu 22.04 LTS and 24.04 LTS)
 - ✅ `crabctl --version` reports commit SHA when installed from source
 - ✅ Tox matrix extended to Python 3.12 and 3.13
@@ -231,6 +230,8 @@ dependency on external tools for common RI bootstrapping workflows.
 
 ## 🔲 Future / Under Consideration
 
+- PyPI release (`crabctl` package name) — deferred from 0.2.0; publish
+  once the public API surface is stable and the package name is confirmed
 - Output format registry — replace the hardcoded `if output_format ==` chain in
   `output.py` with a dict-based dispatcher; enables external packages to
   contribute output formats without modifying core
