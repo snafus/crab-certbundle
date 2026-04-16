@@ -357,6 +357,12 @@
           "description": "Minimum log level written to stderr.",
           "default": "INFO"
         },
+        "format": {
+          "type": "string",
+          "enum": ["text", "json"],
+          "description": "Log output format: 'text' for human-readable lines, 'json' for structured JSON (one object per line).",
+          "default": "text"
+        },
         "file": {
           "type": "string",
           "description": "Optional path to a log file. Log messages are written here in addition to stderr."

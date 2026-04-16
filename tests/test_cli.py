@@ -14,40 +14,7 @@ from click.testing import CliRunner
 from crab.cli import main
 
 
-@pytest.fixture()
-def runner():
-    return CliRunner()
-
-
-@pytest.fixture()
-def cli_env(tmp_path, ca_pem, second_ca_pem):
-    """Set up a minimal source dir, output dir, and config file."""
-    src_dir = tmp_path / "src"
-    src_dir.mkdir()
-    (src_dir / "ca1.pem").write_bytes(ca_pem)
-    (src_dir / "ca2.pem").write_bytes(second_ca_pem)
-
-    out_dir = tmp_path / "out"
-    cfg = tmp_path / "crab.yaml"
-    cfg.write_text(
-        "version: 1\n"
-        "sources:\n"
-        "  local:\n"
-        "    type: local\n"
-        "    path: {src}\n"
-        "profiles:\n"
-        "  default:\n"
-        "    sources: [local]\n"
-        "    output_path: {out}\n"
-        "    atomic: false\n"
-        "    rehash: builtin\n"
-        "    policy:\n"
-        "      reject_expired: true\n"
-        "      require_ca_flag: true\n".format(
-            src=str(src_dir), out=str(out_dir)
-        )
-    )
-    return {"config": str(cfg), "src": str(src_dir), "out": str(out_dir)}
+# runner and cli_env fixtures are defined in conftest.py
 
 
 # ---------------------------------------------------------------------------

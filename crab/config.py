@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_REHASH_MODES = ("auto", "openssl", "builtin")
 _VALID_LOG_LEVELS = frozenset(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+_VALID_LOG_FORMATS = frozenset(["text", "json"])
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +338,13 @@ class Config:
                 raise ConfigError(
                     "'logging.level' must be one of {}; got {!r}".format(
                         "/".join(sorted(_VALID_LOG_LEVELS)), lvl
+                    )
+                )
+            log_fmt = raw_logging.get("format", "text")
+            if log_fmt not in _VALID_LOG_FORMATS:
+                raise ConfigError(
+                    "'logging.format' must be one of {}; got {!r}".format(
+                        "/".join(sorted(_VALID_LOG_FORMATS)), log_fmt
                     )
                 )
             log_file = raw_logging.get("file")

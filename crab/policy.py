@@ -208,6 +208,14 @@ class PolicyEngine:
 
         return accepted
 
+    def count_warnings(self, cert_infos):
+        # type: (List[CertificateInfo]) -> int
+        """Return the number of certs that would receive a WARN outcome."""
+        return sum(
+            1 for ci in cert_infos
+            if self.evaluate(ci).outcome == PolicyOutcome.WARN
+        )
+
 
 # ---------------------------------------------------------------------------
 # Rule compilation

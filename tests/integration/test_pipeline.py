@@ -11,10 +11,15 @@ fixtures from the root conftest so no additional network access or
 external CA data is required.
 """
 
+import contextlib
+import datetime
+import http.server
 import os
+import socketserver
 import subprocess
 import sys
 import textwrap
+import threading
 
 import pytest
 
@@ -378,3 +383,344 @@ class TestPKIPipelineRoundTrip:
         )
         assert verify.returncode == 0, \
             "openssl verify failed: " + verify.stderr.decode()
+
+
+class TestFetchCRLsIntegration:
+    """
+    End-to-end integration tests for 'crabctl fetch-crls'.
+
+    A real HTTP server (socketserver.TCPServer on port 0) serves CRL bytes from
+    memory.  CA certificates are generated with a CRLDistributionPoints extension
+    pointing at the local server so the full fetch-crls pipeline can be exercised
+    without any external network access.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_ca_with_cdp(port, path="/ca.crl"):
+        """
+        Generate a self-signed CA cert + key + empty CRL, with the cert
+        containing a CRLDistributionPoints extension pointing at
+        ``http://127.0.0.1:<port><path>``.
+
+        Returns ``(ca_pem_bytes, ca_key, crl_der_bytes)``.
+        """
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        key = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048, backend=default_backend()
+        )
+        name = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "GB"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "CRL Test Org"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "CRL Test CA {}".format(path)),
+        ])
+        cdp_url = "http://127.0.0.1:{}{}".format(port, path)
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=3650))
+            .add_extension(
+                x509.BasicConstraints(ca=True, path_length=None),
+                critical=True,
+            )
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=False,
+                    content_commitment=False,
+                    key_encipherment=False,
+                    data_encipherment=False,
+                    key_agreement=False,
+                    key_cert_sign=True,
+                    crl_sign=True,
+                    encipher_only=False,
+                    decipher_only=False,
+                ),
+                critical=True,
+            )
+            .add_extension(
+                x509.CRLDistributionPoints([
+                    x509.DistributionPoint(
+                        full_name=[x509.UniformResourceIdentifier(cdp_url)],
+                        relative_name=None,
+                        reasons=None,
+                        crl_issuer=None,
+                    )
+                ]),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256(), default_backend())
+        )
+        ca_pem = cert.public_bytes(serialization.Encoding.PEM)
+
+        crl = (
+            x509.CertificateRevocationListBuilder()
+            .issuer_name(name)
+            .last_update(now - datetime.timedelta(seconds=1))
+            .next_update(now + datetime.timedelta(days=7))
+            .sign(key, hashes.SHA256(), default_backend())
+        )
+        crl_der = crl.public_bytes(serialization.Encoding.DER)
+
+        return ca_pem, key, crl_der
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _http_server():
+        """
+        Start a local HTTP server on a random port; yield ``(port, crl_map)``
+        where ``crl_map`` is a ``dict`` mapping URL paths to ``bytes`` that the
+        caller populates before (or after) starting the server.
+        """
+        crl_map = {}
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                data = crl_map.get(self.path)
+                if data is not None:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/pkix-crl")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, fmt, *args):
+                pass  # suppress HTTP access log noise
+
+        server = socketserver.TCPServer(("127.0.0.1", 0), _Handler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever)
+        t.daemon = True
+        t.start()
+        try:
+            yield port, crl_map
+        finally:
+            server.shutdown()
+            t.join(timeout=5)
+
+    @staticmethod
+    def _write_crl_config(config_path, source_dir, output_dir, staging_dir,
+                          max_workers=1):
+        """Write a crab.yaml with ``include_crls: true`` for *source_dir*."""
+        with open(str(config_path), "w") as fh:
+            fh.write(textwrap.dedent("""\
+                version: 1
+                sources:
+                  local-ca:
+                    type: local
+                    path: {source_dir}
+                    pattern:
+                      - "*.pem"
+                profiles:
+                  test:
+                    sources: [local-ca]
+                    output_format: capath
+                    output_path: {output_dir}
+                    staging_path: {staging_dir}
+                    atomic: true
+                    rehash: builtin
+                    include_igtf_meta: false
+                    include_crls: true
+                    policy:
+                      reject_expired: false
+                      require_ca_flag: true
+                    crl:
+                      fetch: true
+                      verify_tls: false
+                      max_workers: {max_workers}
+                      timeout_seconds: 10
+            """).format(
+                source_dir=source_dir,
+                output_dir=output_dir,
+                staging_dir=staging_dir,
+                max_workers=max_workers,
+            ))
+
+    # ------------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------------
+
+    def test_fetch_crls_dry_run(self, tmp_path):
+        """
+        ``--dry-run`` exits 0, logs the CDP URL, and writes no ``.r0`` file.
+        """
+        with self._http_server() as (port, _crl_map):
+            ca_pem, _, _ = self._make_ca_with_cdp(port)
+            source_dir = tmp_path / "source"
+            source_dir.mkdir()
+            (source_dir / "ca.pem").write_bytes(ca_pem)
+
+            output_dir = tmp_path / "output"
+            config = tmp_path / "crab.yaml"
+            self._write_crl_config(
+                config, str(source_dir), str(output_dir),
+                str(tmp_path / "staging"),
+            )
+
+            result = _crabctl(
+                "--config", str(config), "fetch-crls", "--dry-run", "test"
+            )
+
+        assert result.returncode == 0, "fetch-crls --dry-run failed:\n" + result.stderr
+        # The CDP URL must appear in the INFO-level log written to stderr
+        assert "127.0.0.1:{}".format(port) in result.stderr
+        # No CRL file should have been written
+        assert not output_dir.exists() or not any(
+            f.endswith(".r0") for f in os.listdir(str(output_dir))
+        )
+
+    def test_fetch_crls_live(self, tmp_path):
+        """
+        A CRL is downloaded from the local HTTP server and the ``.r0`` file
+        is written to the output directory.
+        """
+        with self._http_server() as (port, crl_map):
+            ca_pem, _, crl_der = self._make_ca_with_cdp(port)
+            crl_map["/ca.crl"] = crl_der
+
+            source_dir = tmp_path / "source"
+            source_dir.mkdir()
+            (source_dir / "ca.pem").write_bytes(ca_pem)
+
+            output_dir = tmp_path / "output"
+            output_dir.mkdir()
+            config = tmp_path / "crab.yaml"
+            self._write_crl_config(
+                config, str(source_dir), str(output_dir),
+                str(tmp_path / "staging"),
+            )
+
+            result = _crabctl("--config", str(config), "fetch-crls", "test")
+
+        assert result.returncode == 0, "fetch-crls failed:\n" + result.stderr
+        r0_files = [f for f in os.listdir(str(output_dir)) if f.endswith(".r0")]
+        assert len(r0_files) == 1, \
+            "expected 1 .r0 CRL file in output; got: {}".format(r0_files)
+
+    def test_fetch_crls_live_pem_format(self, tmp_path):
+        """
+        The written ``.r0`` file is in PEM format (openssl DER→PEM conversion ran).
+        """
+        with self._http_server() as (port, crl_map):
+            ca_pem, _, crl_der = self._make_ca_with_cdp(port)
+            crl_map["/ca.crl"] = crl_der
+
+            source_dir = tmp_path / "source"
+            source_dir.mkdir()
+            (source_dir / "ca.pem").write_bytes(ca_pem)
+
+            output_dir = tmp_path / "output"
+            output_dir.mkdir()
+            config = tmp_path / "crab.yaml"
+            self._write_crl_config(
+                config, str(source_dir), str(output_dir),
+                str(tmp_path / "staging"),
+            )
+
+            _crabctl("--config", str(config), "fetch-crls", "test")
+
+        r0_files = [f for f in os.listdir(str(output_dir)) if f.endswith(".r0")]
+        assert r0_files, "no .r0 file written"
+        content = (output_dir / r0_files[0]).read_bytes()
+        assert content.lstrip().startswith(b"-----BEGIN X509 CRL-----"), \
+            "expected PEM-format CRL; got: {!r}".format(content[:40])
+
+    def test_fetch_crls_parallel(self, tmp_path):
+        """
+        Multiple CA certs are processed concurrently; all ``.r0`` files land
+        in the output directory.
+        """
+        N = 4
+        with self._http_server() as (port, crl_map):
+            source_dir = tmp_path / "source"
+            source_dir.mkdir()
+            for i in range(N):
+                path = "/ca{}.crl".format(i)
+                ca_pem, _, crl_der = self._make_ca_with_cdp(port, path=path)
+                crl_map[path] = crl_der
+                (source_dir / "ca{}.pem".format(i)).write_bytes(ca_pem)
+
+            output_dir = tmp_path / "output"
+            output_dir.mkdir()
+            config = tmp_path / "crab.yaml"
+            self._write_crl_config(
+                config, str(source_dir), str(output_dir),
+                str(tmp_path / "staging"),
+                max_workers=N,
+            )
+
+            result = _crabctl("--config", str(config), "fetch-crls", "test")
+
+        assert result.returncode == 0, "fetch-crls failed:\n" + result.stderr
+        r0_files = [f for f in os.listdir(str(output_dir)) if f.endswith(".r0")]
+        assert len(r0_files) == N, \
+            "expected {} .r0 CRL files; got: {}".format(N, r0_files)
+
+    def test_fetch_crls_missing_url(self, tmp_path):
+        """
+        A CA cert without a CDP extension reports 'No URL' but exits 0.
+        """
+        # Use ca_pem from conftest — no CDP extension
+        from tests.conftest import _make_ca_cert
+        ca_pem, _, _ = _make_ca_cert(subject_cn="No-CDP CA")
+
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        (source_dir / "ca.pem").write_bytes(ca_pem)
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        config = tmp_path / "crab.yaml"
+        self._write_crl_config(
+            config, str(source_dir), str(output_dir), str(tmp_path / "staging")
+        )
+
+        result = _crabctl("--config", str(config), "fetch-crls", "test")
+
+        assert result.returncode == 0, result.stderr
+        # CLI summary line should report 1 missing URL, 0 updated
+        assert "No URL: 1" in result.stdout
+
+    def test_fetch_crls_server_down(self, tmp_path):
+        """
+        When the CRL server is unreachable, fetch-crls exits 0 but reports
+        a failure (no .r0 file written, error logged).
+        """
+        # Grab a port, let the server start, then shut it down before fetching
+        with self._http_server() as (port, crl_map):
+            ca_pem, _, crl_der = self._make_ca_with_cdp(port)
+            crl_map["/ca.crl"] = crl_der
+            source_dir = tmp_path / "source"
+            source_dir.mkdir()
+            (source_dir / "ca.pem").write_bytes(ca_pem)
+            output_dir = tmp_path / "output"
+            output_dir.mkdir()
+            config = tmp_path / "crab.yaml"
+            self._write_crl_config(
+                config, str(source_dir), str(output_dir),
+                str(tmp_path / "staging"),
+            )
+        # Server is now shut down — fetch will fail
+
+        result = _crabctl("--config", str(config), "fetch-crls", "test")
+
+        assert result.returncode == 0, \
+            "fetch-crls should exit 0 even on fetch failure:\n" + result.stderr
+        r0_files = [f for f in os.listdir(str(output_dir)) if f.endswith(".r0")]
+        assert len(r0_files) == 0, "no .r0 file should be written on failure"

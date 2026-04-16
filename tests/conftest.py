@@ -8,6 +8,7 @@ library so the tests have no dependency on external files or network access.
 import os
 import datetime
 import pytest
+from click.testing import CliRunner
 
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
@@ -204,6 +205,43 @@ def igtf_dir(tmp_path, ca_pem):
         'cond_subjects globus \'"/C=GB/O=Test Org/*"\'\n'
     )
     return str(tmp_path)
+
+
+@pytest.fixture()
+def runner():
+    """Click test runner (function-scoped so each test gets a fresh one)."""
+    return CliRunner()
+
+
+@pytest.fixture()
+def cli_env(tmp_path, ca_pem, second_ca_pem):
+    """Minimal source dir + output dir + crab.yaml for CLI tests."""
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "ca1.pem").write_bytes(ca_pem)
+    (src_dir / "ca2.pem").write_bytes(second_ca_pem)
+
+    out_dir = tmp_path / "out"
+    cfg = tmp_path / "crab.yaml"
+    cfg.write_text(
+        "version: 1\n"
+        "sources:\n"
+        "  local:\n"
+        "    type: local\n"
+        "    path: {src}\n"
+        "profiles:\n"
+        "  default:\n"
+        "    sources: [local]\n"
+        "    output_path: {out}\n"
+        "    atomic: false\n"
+        "    rehash: builtin\n"
+        "    policy:\n"
+        "      reject_expired: true\n"
+        "      require_ca_flag: true\n".format(
+            src=str(src_dir), out=str(out_dir)
+        )
+    )
+    return {"config": str(cfg), "src": str(src_dir), "out": str(out_dir)}
 
 
 @pytest.fixture()

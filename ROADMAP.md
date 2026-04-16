@@ -136,21 +136,21 @@ step-ca/cfssl; the target is "working test CA in ten minutes".*
 hooks.*
 
 > **Prerequisite:** `CRLManager.validate_crls` must be integrated into the
-> pipeline (0.2.0) before `crab status` can report CRL freshness, and
+> pipeline (0.2.0) before `crabctl status` can report CRL freshness, and
 > `PolicyOutcome` must be ternary before exit code 3 is meaningful.
 
-- 🔲 Prometheus/OpenMetrics text-file exporter — cert counts, expiry days,
-  CRL age, last-build timestamp; written to a configurable path after each build
-- 🔲 Structured JSON logging mode (`--log-format json`) for integration with
-  log aggregators (Loki, Splunk, ECS)
-- 🔲 `crab status` command — machine-readable summary of current output
-  directories (cert count, oldest/newest expiry, CRL freshness)
-- 🔲 Exit code 3 — "build succeeded but policy warnings present"; opt-in via
-  `--strict-warnings` (requires ternary `PolicyOutcome` from 0.2.0)
+- ✅ **Structured JSON logging** — `--log-format json` global flag and
+  `logging.format: json` config key; `JsonFormatter` emits one JSON object
+  per line (timestamp, level, logger, message, exception).
+- ✅ **`crabctl status`** — machine-readable health summary: cert count,
+  expired/expiring-soon, earliest expiry, CRL count and freshness,
+  last-built time; `--json` for machine consumption; exits 1 when degraded.
+- ✅ **Exit code 3** — `--strict-warnings` on `build` and `refresh`; exits 3
+  when build succeeds but policy WARN outcomes or CRL fetch failures are
+  present.
 - ✅ **Parallel CRL fetching** — `ThreadPoolExecutor`-backed fetch loop in
   `CRLManager.update_crls`; configurable `crl.max_workers` (default 8);
   persistent `requests.Session` shared across workers for connection reuse.
-- 🔲 Nagios/Icinga-compatible `check_crab` wrapper script
 
 ---
 
@@ -229,6 +229,9 @@ dependency on external tools for common RI bootstrapping workflows.
 
 ## 🔲 Future / Under Consideration
 
+- Prometheus/OpenMetrics text-file exporter — cert counts, expiry days,
+  CRL age, last-build timestamp; written to a configurable path after each build
+- Nagios/Icinga-compatible `check_crab` wrapper script
 - PyPI release (`crabctl` package name) — deferred from 0.2.0; publish
   once the public API surface is stable and the package name is confirmed
 - Output format registry — replace the hardcoded `if output_format ==` chain in

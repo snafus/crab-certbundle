@@ -7,12 +7,14 @@ Commands:
   diff        Show changes between current directory and a new build.
   list        List certificates in a source, profile output, or directory.
   fetch-crls  Fetch or refresh CRLs for a profile.
+  status      Show health summary for one or more profile output directories.
   show-config Dump the resolved configuration (useful for debugging).
 
 Global options:
-  --config / -c    Path to config file (default: ./crab.yaml or /etc/crab/config.yaml)
-  --verbose / -v   Increase log verbosity.
-  --quiet / -q     Suppress all output except errors.
+  --config / -c          Path to config file (default: ./crab.yaml or /etc/crab/config.yaml)
+  --verbose / -v         Increase log verbosity.
+  --quiet / -q           Suppress all output except errors.
+  --log-format text|json Log output format (default: text).
 """
 
 import json
@@ -25,6 +27,7 @@ from typing import List, Optional
 import click
 
 from crab import __version__, __commit__
+from crab.logfmt import make_formatter
 from crab.cert import parse_pem_file
 from crab.config import load_config, ConfigError
 from crab.sources import build_source
@@ -89,8 +92,15 @@ _version_string = (
     default=False,
     help="Suppress informational output.",
 )
+@click.option(
+    "--log-format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    show_default=True,
+    help="Log output format.",
+)
 @click.pass_context
-def main(ctx, config, verbose, quiet):
+def main(ctx, config, verbose, quiet, log_format):
     """
     crabctl — OpenSSL CApath directory generator for research infrastructure.
 
@@ -101,14 +111,17 @@ def main(ctx, config, verbose, quiet):
 
     # Initial logging setup — may be refined after config is loaded.
     level = logging.DEBUG if verbose else (logging.ERROR if quiet else logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(levelname)s  %(name)s: %(message)s",
-    )
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(make_formatter(log_format))
+        root.addHandler(handler)
+    root.setLevel(level)
 
     # Record CLI flags so _apply_logging_config can honour them as overrides.
     ctx.obj["verbose"] = verbose
     ctx.obj["quiet"] = quiet
+    ctx.obj["log_format"] = log_format
 
     # Config resolution
     if config:
@@ -126,21 +139,30 @@ def main(ctx, config, verbose, quiet):
 @click.option("--dry-run", is_flag=True, help="Show what would be done without writing.")
 @click.option("--no-crls", is_flag=True, help="Skip CRL fetching even if configured.")
 @click.option("--report", is_flag=True, help="Print a source/policy report after building.")
+@click.option(
+    "--strict-warnings", is_flag=True,
+    help="Exit 3 when the build succeeds but policy or CRL warnings are present.",
+)
 @click.pass_context
-def build(ctx, profiles, dry_run, no_crls, report):
+def build(ctx, profiles, dry_run, no_crls, report, strict_warnings):
     """
     Build output profile(s) from configured sources.
 
     If no PROFILE names are given, all profiles are built.
 
+    Exit codes: 0 = success, 1 = errors, 3 = success with warnings (--strict-warnings).
+
+    \b
     Example:
         crabctl build grid server-auth
         crabctl build --dry-run
+        crabctl build --strict-warnings
     """
     cfg = _load_config_or_exit(ctx)
     profile_names = list(profiles) or list(cfg.profiles.keys())
 
     total_errors = 0
+    total_warned = 0
     for pname in profile_names:
         if pname not in cfg.profiles:
             click.echo("ERROR: Unknown profile '{}'. Available: {}".format(
@@ -150,18 +172,26 @@ def build(ctx, profiles, dry_run, no_crls, report):
             continue
 
         click.echo("Building profile '{}'...".format(pname))
-        errors = _build_profile(cfg, pname, dry_run=dry_run, skip_crls=no_crls, do_report=report)
+        errors, warned = _build_profile(
+            cfg, pname, dry_run=dry_run, skip_crls=no_crls, do_report=report
+        )
         total_errors += errors
+        total_warned += warned
 
-    sys.exit(1 if total_errors else 0)
+    if total_errors:
+        sys.exit(1)
+    if strict_warnings and total_warned:
+        sys.exit(3)
+    sys.exit(0)
 
 
 def _build_profile(cfg, profile_name, dry_run=False, skip_crls=False, do_report=False):
-    # type: (...) -> int
-    """Build one profile.  Returns number of errors."""
+    # type: (...) -> tuple
+    """Build one profile.  Returns ``(errors, warned)`` counts."""
     profile_cfg = cfg.profiles[profile_name]
     source_names = profile_cfg.sources
     errors = 0
+    warned = 0
 
     # Load sources
     source_results = []
@@ -188,7 +218,11 @@ def _build_profile(cfg, profile_name, dry_run=False, skip_crls=False, do_report=
     # Policy filtering
     policy = PolicyEngine(profile_cfg.policy)
     accepted = policy.filter(all_certs)
+    policy_warned = policy.count_warnings(accepted)
+    warned += policy_warned
     click.echo("  Policy: {}/{} certificates accepted".format(len(accepted), len(all_certs)))
+    if policy_warned:
+        click.echo("  Policy warnings: {}".format(policy_warned), err=True)
 
     # Deduplication report
     unique_fps = set(c.fingerprint_sha256 for c in accepted)
@@ -230,8 +264,9 @@ def _build_profile(cfg, profile_name, dry_run=False, skip_crls=False, do_report=
         ))
         for err in crl_result.errors:
             click.echo("  CRL WARNING: {}".format(err), err=True)
+        warned += len(crl_result.failed)
 
-    return errors
+    return errors, warned
 
 
 # ---------------------------------------------------------------------------
@@ -496,8 +531,12 @@ def fetch_crls(ctx, profiles, dry_run):
 @click.argument("profiles", nargs=-1, metavar="[PROFILE...]")
 @click.option("--dry-run", is_flag=True, help="Show what would be done without writing.")
 @click.option("--report", is_flag=True, help="Print a source/policy report after building.")
+@click.option(
+    "--strict-warnings", is_flag=True,
+    help="Exit 3 when the refresh succeeds but policy or CRL warnings are present.",
+)
 @click.pass_context
-def refresh(ctx, profiles, dry_run, report):
+def refresh(ctx, profiles, dry_run, report, strict_warnings):
     """
     Refresh CRLs then rebuild output profile(s).
 
@@ -515,6 +554,8 @@ def refresh(ctx, profiles, dry_run, report):
     fetch-crls and build with a single refresh also simplifies container
     entrypoint configuration.
 
+    Exit codes: 0 = success, 1 = errors, 3 = success with warnings (--strict-warnings).
+
     If no PROFILE names are given, all profiles are refreshed.
 
     \b
@@ -522,11 +563,13 @@ def refresh(ctx, profiles, dry_run, report):
         crabctl refresh
         crabctl refresh grid
         crabctl refresh --dry-run
+        crabctl refresh --strict-warnings
     """
     cfg = _load_config_or_exit(ctx)
     profile_names = list(profiles) or list(cfg.profiles.keys())
 
     total_errors = 0
+    total_warned = 0
     for pname in profile_names:
         if pname not in cfg.profiles:
             click.echo("ERROR: Unknown profile '{}'. Available: {}".format(
@@ -549,6 +592,7 @@ def refresh(ctx, profiles, dry_run, report):
                 ))
                 for err in crl_result.errors:
                     click.echo("  CRL WARNING: {}".format(err), err=True)
+                total_warned += len(crl_result.failed)
             except Exception as exc:
                 click.echo(
                     "  WARNING: CRL fetch failed for '{}': {} — continuing with build".format(
@@ -559,12 +603,66 @@ def refresh(ctx, profiles, dry_run, report):
 
         # Step 2: Full build; skip the internal CRL step since we just ran it.
         click.echo("Building profile '{}'...".format(pname))
-        errors = _build_profile(
+        errors, warned = _build_profile(
             cfg, pname, dry_run=dry_run, skip_crls=True, do_report=report
         )
         total_errors += errors
+        total_warned += warned
 
-    sys.exit(1 if total_errors else 0)
+    if total_errors:
+        sys.exit(1)
+    if strict_warnings and total_warned:
+        sys.exit(3)
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+@main.command("status")
+@click.argument("profiles", nargs=-1, metavar="[PROFILE...]")
+@click.option("--json", "output_json", is_flag=True, help="Emit JSON output.")
+@click.pass_context
+def status_cmd(ctx, profiles, output_json):
+    """
+    Show health summary for one or more profile output directories.
+
+    Reports certificate counts, expiry dates, CRL freshness, and last-build
+    time.  Exits 0 when all profiles are healthy, 1 otherwise.
+
+    If no PROFILE names are given, all configured profiles are checked.
+    """
+    from crab.status import collect_status, render_status_text
+
+    cfg = _load_config_or_exit(ctx)
+    profile_names = list(profiles) or list(cfg.profiles.keys())
+
+    unknown = [n for n in profile_names if n not in cfg.profiles]
+    if unknown:
+        for n in unknown:
+            click.echo("ERROR: Unknown profile '{}'".format(n), err=True)
+        sys.exit(1)
+
+    statuses = []
+    for pname in profile_names:
+        profile_cfg = cfg.profiles[pname]
+        # Load certs for CRL freshness check only if CRLs are configured
+        cert_infos = None
+        if profile_cfg.include_crls:
+            try:
+                cert_infos = _load_profile_certs(cfg, pname)
+            except Exception as exc:
+                logger.warning("Could not load certs for '%s' CRL check: %s", pname, exc)
+        statuses.append(collect_status(pname, profile_cfg, cert_infos))
+
+    if output_json:
+        click.echo(json.dumps([s.to_dict() for s in statuses], indent=2))
+    else:
+        click.echo(render_status_text(statuses))
+
+    if not all(s.healthy for s in statuses):
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -645,12 +743,13 @@ def _apply_logging_config(cfg, ctx):
     """
     Apply the ``logging:`` section from *cfg* to the root logger.
 
-    CLI flags (``--verbose`` / ``--quiet``) take priority over the config
-    file level so that ad-hoc overrides always work as expected.
+    Priority for each setting:
+      level  — CLI flag (``--verbose``/``--quiet``) > config ``logging.level``
+      format — CLI flag (``--log-format``)          > config ``logging.format``
     """
     lc = cfg.logging_config
 
-    # Resolve effective log level: CLI flags beat config file beats default.
+    # Resolve effective log level.
     if ctx.obj.get("verbose"):
         level = logging.DEBUG
     elif ctx.obj.get("quiet"):
@@ -659,9 +758,15 @@ def _apply_logging_config(cfg, ctx):
         level_name = lc.get("level", "INFO").upper()
         level = getattr(logging, level_name, logging.INFO)
 
+    # Resolve effective log format: CLI flag beats config file.
+    cli_fmt = ctx.obj.get("log_format", "text")
+    fmt = cli_fmt if cli_fmt != "text" else lc.get("format", "text")
+    formatter = make_formatter(fmt)
+
     logging.root.setLevel(level)
     for h in logging.root.handlers:
         h.setLevel(level)
+        h.setFormatter(formatter)
 
     # Optional file handler — added once; idempotent on repeated calls.
     log_file = lc.get("file")
@@ -676,9 +781,7 @@ def _apply_logging_config(cfg, ctx):
                 os.makedirs(log_dir, exist_ok=True)
             fh = logging.FileHandler(abs_path)
             fh.setLevel(level)
-            fh.setFormatter(
-                logging.Formatter("%(asctime)s  %(levelname)s  %(name)s: %(message)s")
-            )
+            fh.setFormatter(make_formatter(fmt, with_time=True))
             logging.root.addHandler(fh)
         except OSError as exc:
             logger.warning("Could not open log file %s: %s", log_file, exc)
