@@ -281,7 +281,7 @@ class TestStatusCLI:
         runner.invoke(main, ["--config", cli_env["config"], "build"],
                       catch_exceptions=False)
         result = runner.invoke(
-            main, ["--config", cli_env["config"], "status", "--json"],
+            main, ["--config", cli_env["config"], "--output-format", "json", "status"],
             catch_exceptions=False,
         )
         assert result.exit_code == 0

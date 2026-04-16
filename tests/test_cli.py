@@ -26,7 +26,7 @@ class TestVersion:
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
         assert "crabctl" in result.output
-        assert "0.2.0" in result.output
+        assert "0.3.0" in result.output
 
     def test_version_includes_commit(self, runner):
         """Version output includes a commit SHA when one is available."""
@@ -37,7 +37,7 @@ class TestVersion:
             assert __commit__ in result.output
         else:
             # Unknown is acceptable (e.g. installed from a plain tarball).
-            assert "0.2.0" in result.output
+            assert "0.3.0" in result.output
 
     def test_commit_is_resolved(self):
         """__commit__ is a non-empty string (SHA or 'unknown')."""
@@ -199,7 +199,7 @@ class TestList:
 
     def test_list_json(self, runner, cli_env):
         result = runner.invoke(
-            main, ["--config", cli_env["config"], "list", "--json", "default"]
+            main, ["--config", cli_env["config"], "--output-format", "json", "list", "default"]
         )
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -275,7 +275,7 @@ class TestDiff:
         except TypeError:
             runner = CliRunner()
         result = runner.invoke(
-            main, ["--config", cli_env["config"], "diff", "--json", "default"]
+            main, ["--config", cli_env["config"], "--output-format", "json", "diff", "default"]
         )
         # May exit 1 (changes detected) but stdout must be valid JSON.
         try:
@@ -283,7 +283,7 @@ class TestDiff:
             assert "summary" in data
         except json.JSONDecodeError:
             pytest.fail(
-                "diff --json stdout was not valid JSON.\n"
+                "diff --output-format json stdout was not valid JSON.\n"
                 "stdout: {!r}\nstderr: {!r}".format(result.output, result.stderr)
             )
 
@@ -411,15 +411,15 @@ class TestGlobalOptions:
 
 
 # ---------------------------------------------------------------------------
-# validate --json
+# validate --output-format json
 # ---------------------------------------------------------------------------
 
 class TestValidateJson:
     def test_json_output_is_valid_json(self, runner, cli_env):
         runner.invoke(main, ["--config", cli_env["config"], "build"])
         result = runner.invoke(
-            main, ["--config", cli_env["config"], "validate", "--json",
-                   "default", "--no-openssl"]
+            main, ["--config", cli_env["config"], "--output-format", "json",
+                   "validate", "default", "--no-openssl"]
         )
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -428,8 +428,8 @@ class TestValidateJson:
     def test_json_contains_target_and_issues(self, runner, cli_env):
         runner.invoke(main, ["--config", cli_env["config"], "build"])
         result = runner.invoke(
-            main, ["--config", cli_env["config"], "validate", "--json",
-                   "default", "--no-openssl"]
+            main, ["--config", cli_env["config"], "--output-format", "json",
+                   "validate", "default", "--no-openssl"]
         )
         data = json.loads(result.output)
         assert data[0]["target"] == "default"
@@ -440,8 +440,8 @@ class TestValidateJson:
     def test_json_exit_code_2_on_error(self, runner, cli_env):
         # Validate a non-existent profile directory → error
         result = runner.invoke(
-            main, ["--config", cli_env["config"], "validate", "--json",
-                   "default", "--no-openssl"]
+            main, ["--config", cli_env["config"], "--output-format", "json",
+                   "validate", "default", "--no-openssl"]
         )
         # output dir doesn't exist yet → errors
         assert result.exit_code == 2
@@ -1167,16 +1167,16 @@ class TestFindDefaultConfig:
 
 
 class TestDiffJsonExitCode:
-    """diff --json exits 1 when changes are detected (same contract as text mode)."""
+    """diff --output-format json exits 1 when changes are detected (same contract as text mode)."""
 
     def test_diff_json_exits_1_when_changes(self, runner, cli_env, tmp_path):
-        """diff --json with an empty comparison dir exits 1 (changes present)."""
+        """diff with --output-format json and empty comparison dir exits 1 (changes present)."""
         empty_dir = str(tmp_path / "empty")
         os.makedirs(empty_dir)
         result = runner.invoke(
             main,
-            ["--config", cli_env["config"], "diff", "--json",
-             "--old-dir", empty_dir, "default"],
+            ["--config", cli_env["config"], "--output-format", "json",
+             "diff", "--old-dir", empty_dir, "default"],
         )
         import json as _json
         data = _json.loads(result.output)
@@ -1184,7 +1184,7 @@ class TestDiffJsonExitCode:
         assert result.exit_code == 1
 
     def test_diff_json_exits_0_when_no_changes(self, runner, cli_env, tmp_path, ca_pem, second_ca_pem):
-        """diff --json exits 0 when output matches what would be built."""
+        """diff --output-format json exits 0 when output matches what would be built."""
         from crab.rehash import build_symlink_map
         from crab.cert import parse_pem_data
         # Build an output dir identical to what build would produce
@@ -1196,8 +1196,8 @@ class TestDiffJsonExitCode:
             open(os.path.join(out, fname), "wb").write(pem)
         result = runner.invoke(
             main,
-            ["--config", cli_env["config"], "diff", "--json", "--old-dir", out,
-             "default"],
+            ["--config", cli_env["config"], "--output-format", "json",
+             "diff", "--old-dir", out, "default"],
         )
         import json as _json
         data = _json.loads(result.output)

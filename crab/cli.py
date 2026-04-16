@@ -11,10 +11,11 @@ Commands:
   show-config Dump the resolved configuration (useful for debugging).
 
 Global options:
-  --config / -c          Path to config file (default: ./crab.yaml or /etc/crab/config.yaml)
-  --verbose / -v         Increase log verbosity.
-  --quiet / -q           Suppress all output except errors.
-  --log-format text|json Log output format (default: text).
+  --config / -c               Path to config file (default: ./crab.yaml or /etc/crab/config.yaml)
+  --verbose / -v              Increase log verbosity.
+  --quiet / -q                Suppress all output except errors.
+  --log-format text|json      Log output format (default: text).
+  --output-format text|json   Command output format (default: text).
 """
 
 import json
@@ -99,8 +100,15 @@ _version_string = (
     show_default=True,
     help="Log output format.",
 )
+@click.option(
+    "--output-format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    show_default=True,
+    help="Command output format.",
+)
 @click.pass_context
-def main(ctx, config, verbose, quiet, log_format):
+def main(ctx, config, verbose, quiet, log_format, output_format):
     """
     crabctl — OpenSSL CApath directory generator for research infrastructure.
 
@@ -122,6 +130,7 @@ def main(ctx, config, verbose, quiet, log_format):
     ctx.obj["verbose"] = verbose
     ctx.obj["quiet"] = quiet
     ctx.obj["log_format"] = log_format
+    ctx.obj["output_format"] = output_format
 
     # Config resolution
     if config:
@@ -277,9 +286,8 @@ def _build_profile(cfg, profile_name, dry_run=False, skip_crls=False, do_report=
 @click.argument("targets", nargs=-1, metavar="[PROFILE_OR_DIR...]")
 @click.option("--no-hash-check", is_flag=True, help="Skip hash filename verification.")
 @click.option("--no-openssl", is_flag=True, help="Skip openssl verify smoke tests.")
-@click.option("--json", "output_json", is_flag=True, help="Output JSON.")
 @click.pass_context
-def validate(ctx, targets, no_hash_check, no_openssl, output_json):
+def validate(ctx, targets, no_hash_check, no_openssl):
     """
     Validate one or more CApath directories.
 
@@ -289,6 +297,7 @@ def validate(ctx, targets, no_hash_check, no_openssl, output_json):
     Exit code: 0 = OK, 1 = warnings, 2 = errors.
     """
     cfg = _load_config_or_exit(ctx)
+    output_json = ctx.obj["output_format"] == "json"
 
     # Resolve targets to directories
     dirs = []
@@ -355,9 +364,8 @@ def validate(ctx, targets, no_hash_check, no_openssl, output_json):
 @click.argument("profile_or_dir")
 @click.option("--old-dir", default=None, metavar="DIR",
               help="Compare against this directory instead of rebuilding.")
-@click.option("--json", "output_json", is_flag=True, help="Output JSON diff.")
 @click.pass_context
-def diff(ctx, profile_or_dir, old_dir, output_json):
+def diff(ctx, profile_or_dir, old_dir):
     """
     Show changes between the current output directory and a fresh build.
 
@@ -369,6 +377,7 @@ def diff(ctx, profile_or_dir, old_dir, output_json):
         crabctl diff /etc/grid-security/certificates --old-dir /backup/certs
     """
     cfg = _load_config_or_exit(ctx)
+    output_json = ctx.obj["output_format"] == "json"
 
     # Resolve profile
     if profile_or_dir in cfg.profiles:
@@ -440,10 +449,9 @@ def _load_profile_certs(cfg, profile_name):
 @click.argument("target", default=None, required=False, metavar="[PROFILE_OR_DIR]")
 @click.option("--source", "-s", default=None, metavar="SOURCE",
               help="List certificates in a specific source rather than a profile/directory.")
-@click.option("--json", "output_json", is_flag=True, help="Output JSON.")
 @click.option("--expired", is_flag=True, help="Show only expired certificates.")
 @click.pass_context
-def list_cmd(ctx, target, source, output_json, expired):
+def list_cmd(ctx, target, source, expired):
     """
     List certificates in a profile, source, or directory.
 
@@ -451,9 +459,10 @@ def list_cmd(ctx, target, source, output_json, expired):
         crabctl list grid
         crabctl list --source igtf-classic
         crabctl list /etc/grid-security/certificates
-        crabctl list --json | jq '.[].subject'
+        crabctl --output-format json list | jq '.[].subject'
     """
     cfg = _load_config_or_exit(ctx)
+    output_json = ctx.obj["output_format"] == "json"
     certs = []
 
     if source:
@@ -622,9 +631,8 @@ def refresh(ctx, profiles, dry_run, report, strict_warnings):
 
 @main.command("status")
 @click.argument("profiles", nargs=-1, metavar="[PROFILE...]")
-@click.option("--json", "output_json", is_flag=True, help="Emit JSON output.")
 @click.pass_context
-def status_cmd(ctx, profiles, output_json):
+def status_cmd(ctx, profiles):
     """
     Show health summary for one or more profile output directories.
 
@@ -636,6 +644,7 @@ def status_cmd(ctx, profiles, output_json):
     from crab.status import collect_status, render_status_text
 
     cfg = _load_config_or_exit(ctx)
+    output_json = ctx.obj["output_format"] == "json"
     profile_names = list(profiles) or list(cfg.profiles.keys())
 
     unknown = [n for n in profile_names if n not in cfg.profiles]
@@ -872,15 +881,15 @@ def ca_init(ctx, ca_dir, name, org, days, key_type, force, add_to_profile):
 
 @ca_group.command("show")
 @click.argument("ca_dir", default="./ca", metavar="[CA_DIR]")
-@click.option("--json", "output_json", is_flag=True, help="Output JSON.")
-def ca_show(ca_dir, output_json):
+@click.pass_context
+def ca_show(ctx, ca_dir):
     """
     Display details about the CA in CA_DIR.
 
     \b
     Examples:
         crabctl ca show ./my-ca
-        crabctl ca show ./my-ca --json
+        crabctl --output-format json ca show ./my-ca
     """
     try:
         info = show_ca_info(ca_dir)
@@ -888,6 +897,7 @@ def ca_show(ca_dir, output_json):
         click.echo("ERROR: {}".format(exc), err=True)
         sys.exit(1)
 
+    output_json = (ctx.obj or {}).get("output_format", "text") == "json"
     if output_json:
         click.echo(json.dumps(info, indent=2))
         return
@@ -1012,10 +1022,10 @@ def cert_revoke(ca_dir, cert_file, reason):
 @cert_group.command("list")
 @click.option("--ca", "ca_dir", required=True, metavar="CA_DIR",
               help="Path to the CA directory.")
-@click.option("--json", "output_json", is_flag=True, help="Output JSON.")
 @click.option("--revoked", "show_revoked", is_flag=True,
               help="Show only revoked certificates.")
-def cert_list(ca_dir, output_json, show_revoked):
+@click.pass_context
+def cert_list(ctx, ca_dir, show_revoked):
     """
     List certificates issued by the CA in CA_DIR.
 
@@ -1023,7 +1033,7 @@ def cert_list(ca_dir, output_json, show_revoked):
     Examples:
         crabctl cert list --ca ./my-ca
         crabctl cert list --ca ./my-ca --revoked
-        crabctl cert list --ca ./my-ca --json
+        crabctl --output-format json cert list --ca ./my-ca
     """
     try:
         records = list_issued(ca_dir)
@@ -1034,6 +1044,7 @@ def cert_list(ca_dir, output_json, show_revoked):
     if show_revoked:
         records = [r for r in records if r.get("revoked")]
 
+    output_json = (ctx.obj or {}).get("output_format", "text") == "json"
     if output_json:
         click.echo(json.dumps(records, indent=2))
         return

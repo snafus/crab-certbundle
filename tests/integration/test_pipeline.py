@@ -221,7 +221,7 @@ class TestPKICLI:
         import json
         ca_dir = str(tmp_path / "my-ca")
         _crabctl("-q", "ca", "init", ca_dir, "--name", "JSON CA")
-        result = _crabctl("-q", "ca", "show", ca_dir, "--json")
+        result = _crabctl("--output-format", "json", "-q", "ca", "show", ca_dir)
         assert result.returncode == 0, result.stderr
         data = json.loads(result.stdout)
         assert data["key_type"] == "RSA-2048"
@@ -231,7 +231,7 @@ class TestPKICLI:
         ca_dir = str(tmp_path / "ed-ca")
         result = _crabctl("-q", "ca", "init", ca_dir, "--key-type", "ed25519")
         assert result.returncode == 0, result.stderr
-        info = _crabctl("-q", "ca", "show", ca_dir, "--json")
+        info = _crabctl("--output-format", "json", "-q", "ca", "show", ca_dir)
         import json
         assert json.loads(info.stdout)["key_type"] == "Ed25519"
 
@@ -296,7 +296,7 @@ class TestPKICLI:
         _crabctl("-q", "ca", "init", ca_dir)
         _crabctl("-q", "cert", "issue", "--ca", ca_dir, "--cn", "host.example.com")
 
-        list_result = _crabctl("-q", "cert", "list", "--ca", ca_dir, "--json")
+        list_result = _crabctl("--output-format", "json", "-q", "cert", "list", "--ca", ca_dir)
         assert list_result.returncode == 0
         records = json.loads(list_result.stdout)
         assert len(records) == 1
@@ -309,7 +309,7 @@ class TestPKICLI:
         assert revoke_result.returncode == 0, revoke_result.stderr
         assert os.path.isfile(os.path.join(ca_dir, "crl.pem"))
 
-        list_after = _crabctl("-q", "cert", "list", "--ca", ca_dir, "--json")
+        list_after = _crabctl("--output-format", "json", "-q", "cert", "list", "--ca", ca_dir)
         records_after = json.loads(list_after.stdout)
         assert records_after[0]["revoked"] is True
         assert records_after[0]["revoke_reason"] == "superseded"
