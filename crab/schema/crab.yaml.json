@@ -328,6 +328,12 @@
           "minimum": 1,
           "default": 30
         },
+        "max_workers": {
+          "type": "integer",
+          "description": "Maximum number of parallel CRL fetch threads. Set to 1 for serial behaviour.",
+          "minimum": 1,
+          "default": 8
+        },
         "sources": {
           "type": "array",
           "description": "Where to look for CRL distribution point URLs.",

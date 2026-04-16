@@ -103,6 +103,18 @@ class TestCRLManagerConstruction:
             CRLManager({"verify_tls": False}, str(tmp_path))
         assert any("TLS verification is DISABLED" in r.message for r in caplog.records)
 
+    def test_default_max_workers(self, tmp_path):
+        mgr = CRLManager({}, str(tmp_path))
+        assert mgr.max_workers == 8
+
+    def test_custom_max_workers(self, tmp_path):
+        mgr = CRLManager({"max_workers": 16}, str(tmp_path))
+        assert mgr.max_workers == 16
+
+    def test_max_workers_minimum_is_one(self, tmp_path):
+        mgr = CRLManager({"max_workers": 0}, str(tmp_path))
+        assert mgr.max_workers == 1
+
 
 # ---------------------------------------------------------------------------
 # CRLManager.update_crls — dry run (no network)
@@ -136,6 +148,164 @@ class TestCRLManagerUpdateDryRun:
     def test_result_repr(self):
         r = CRLUpdateResult()
         assert "CRLUpdateResult" in repr(r)
+
+
+# ---------------------------------------------------------------------------
+# CRLManager.update_crls — parallel fetch (mocked network)
+# ---------------------------------------------------------------------------
+
+class TestCRLManagerParallelFetch:
+    """Verify parallel fetch behaviour without making real network calls."""
+
+    def _make_ci(self, url, ca_pem):
+        """Build a CertificateInfo with a single CDP URL."""
+        ci = parse_pem_data(ca_pem)[0]
+        ci.crl_distribution_points = [url]
+        ci.igtf_info = {}
+        return ci
+
+    def _fake_crl_pem(self):
+        # Minimal PEM-looking bytes to pass the _write_crl path
+        return b"-----BEGIN X509 CRL-----\nZmFrZQ==\n-----END X509 CRL-----\n"
+
+    def test_all_certs_fetched(self, tmp_path, ca_pem):
+        """update_crls fetches a CRL for every cert that has a URL."""
+        urls = [
+            "http://crl.example.com/{}.crl".format(i)
+            for i in range(5)
+        ]
+        cert_infos = [self._make_ci(u, ca_pem) for u in urls]
+        fetched = []
+
+        def fake_fetch(url, verify_tls=True, timeout=None, session=None, **kw):
+            fetched.append(url)
+            return self._fake_crl_pem()
+
+        with patch("crab.crl.CRLManager._fetch_crl", side_effect=lambda url, session=None: fake_fetch(url, session=session)):
+            with patch("crab.crl.CRLManager._write_crl"):
+                mgr = CRLManager({"max_workers": 4}, str(tmp_path))
+                result = mgr.update_crls(cert_infos)
+
+        assert len(result.updated) == 5
+        assert len(result.failed) == 0
+        assert sorted(fetched) == sorted(urls)
+
+    def test_parallel_execution(self, tmp_path, ca_pem):
+        """Fetches with max_workers > 1 run concurrently (wall time < serial time)."""
+        import time
+
+        N = 6
+        DELAY = 0.15  # seconds per simulated fetch
+        urls = ["http://crl{}.example.com/ca.crl".format(i) for i in range(N)]
+        cert_infos = [self._make_ci(u, ca_pem) for u in urls]
+
+        def slow_fetch(url, session=None):
+            time.sleep(DELAY)
+            return self._fake_crl_pem()
+
+        with patch("crab.crl.CRLManager._fetch_crl", side_effect=slow_fetch):
+            with patch("crab.crl.CRLManager._write_crl"):
+                mgr = CRLManager({"max_workers": N}, str(tmp_path))
+                t0 = time.time()
+                result = mgr.update_crls(cert_infos)
+                elapsed = time.time() - t0
+
+        assert len(result.updated) == N
+        # Serial would take N * DELAY seconds; parallel should be well under half.
+        assert elapsed < (N * DELAY) / 2, (
+            "Expected parallel execution (<{:.2f}s) but took {:.2f}s".format(
+                (N * DELAY) / 2, elapsed
+            )
+        )
+
+    def test_serial_with_max_workers_one(self, tmp_path, ca_pem):
+        """max_workers=1 still fetches all CRLs correctly."""
+        urls = ["http://crl{}.example.com/ca.crl".format(i) for i in range(3)]
+        cert_infos = [self._make_ci(u, ca_pem) for u in urls]
+
+        with patch("crab.crl.CRLManager._fetch_crl",
+                   side_effect=lambda url, session=None: self._fake_crl_pem()):
+            with patch("crab.crl.CRLManager._write_crl"):
+                mgr = CRLManager({"max_workers": 1}, str(tmp_path))
+                result = mgr.update_crls(cert_infos)
+
+        assert len(result.updated) == 3
+        assert len(result.failed) == 0
+
+    def test_failed_fetch_does_not_block_others(self, tmp_path, ca_pem):
+        """A fetch failure for one cert does not prevent other certs from succeeding."""
+        good_url = "http://good.example.com/ca.crl"
+        bad_url  = "http://bad.example.com/ca.crl"
+        good_ci  = self._make_ci(good_url, ca_pem)
+        bad_ci   = self._make_ci(bad_url,  ca_pem)
+
+        def selective_fetch(url, session=None):
+            if "bad" in url:
+                raise IOError("simulated network failure")
+            return self._fake_crl_pem()
+
+        with patch("crab.crl.CRLManager._fetch_crl", side_effect=selective_fetch):
+            with patch("crab.crl.CRLManager._write_crl"):
+                mgr = CRLManager({"max_workers": 2}, str(tmp_path))
+                result = mgr.update_crls([good_ci, bad_ci])
+
+        assert good_url in result.updated
+        assert bad_ci.subject in result.failed
+        assert len(result.errors) == 1
+
+    def test_session_passed_to_fetch(self, tmp_path, ca_pem):
+        """The same requests.Session instance is passed to every _fetch_crl call."""
+        sessions_seen = []
+        url = "http://crl.example.com/ca.crl"
+        ci = self._make_ci(url, ca_pem)
+
+        def capture_session(url, session=None):
+            sessions_seen.append(id(session))
+            return self._fake_crl_pem()
+
+        with patch("crab.crl.CRLManager._fetch_crl", side_effect=capture_session):
+            with patch("crab.crl.CRLManager._write_crl"):
+                mgr = CRLManager({}, str(tmp_path))
+                mgr.update_crls([ci, ci])  # two fetches
+
+        assert len(sessions_seen) == 2
+        assert sessions_seen[0] == sessions_seen[1], "Expected the same Session for all fetches"
+
+    def test_url_fallback_within_task(self, tmp_path, ca_pem):
+        """If the first URL fails, the second is tried within the same task."""
+        ci = parse_pem_data(ca_pem)[0]
+        ci.crl_distribution_points = [
+            "http://fail.example.com/ca.crl",
+            "http://ok.example.com/ca.crl",
+        ]
+        ci.igtf_info = {}
+        tried = []
+
+        def fetch(url, session=None):
+            tried.append(url)
+            if "fail" in url:
+                raise IOError("first URL fails")
+            return self._fake_crl_pem()
+
+        with patch("crab.crl.CRLManager._fetch_crl", side_effect=fetch):
+            with patch("crab.crl.CRLManager._write_crl"):
+                mgr = CRLManager({}, str(tmp_path))
+                result = mgr.update_crls([ci])
+
+        assert "http://ok.example.com/ca.crl" in result.updated
+        assert "http://fail.example.com/ca.crl" in tried
+        assert "http://ok.example.com/ca.crl" in tried
+
+    def test_dry_run_parallel(self, tmp_path, ca_pem):
+        """dry_run=True still reports would_fetch without network access."""
+        urls = ["http://crl{}.example.com/ca.crl".format(i) for i in range(4)]
+        cert_infos = [self._make_ci(u, ca_pem) for u in urls]
+
+        mgr = CRLManager({"max_workers": 4}, str(tmp_path))
+        result = mgr.update_crls(cert_infos, dry_run=True)
+
+        assert len(result.would_fetch) == 4
+        assert len(result.updated) == 0
 
 
 # ---------------------------------------------------------------------------

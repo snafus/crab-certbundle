@@ -46,6 +46,7 @@ def download_to_bytes(
     verify_tls=True,        # type: bool
     timeout=None,           # type: Optional[tuple]
     max_bytes=None,         # type: Optional[int]
+    session=None,           # type: Optional[object]
 ):
     # type: (...) -> bytes
     """
@@ -54,6 +55,11 @@ def download_to_bytes(
     Only HTTP and HTTPS URLs are accepted.
     Raises :exc:`ValueError` for unsupported schemes.
     Raises :exc:`IOError` on persistent download failure.
+
+    *session* — an optional ``requests.Session`` to use instead of a
+    bare ``requests.get``.  Pass a shared session from the caller to
+    benefit from connection pooling and TLS session reuse across multiple
+    downloads (e.g. parallel CRL fetches).
     """
     import requests  # lazy import — not required on all code paths
 
@@ -64,13 +70,15 @@ def download_to_bytes(
     if max_bytes is None:
         max_bytes = _MAX_CONTENT_MB * 1024 * 1024
 
+    getter = session.get if session is not None else requests.get
+
     last_exc = None
     delay = _RETRY_BACKOFF
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             logger.debug("Downloading %s (attempt %d/%d)", url, attempt, _MAX_RETRIES)
-            resp = requests.get(
+            resp = getter(
                 url,
                 timeout=timeout,
                 verify=verify_tls,

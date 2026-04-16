@@ -19,6 +19,8 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -86,7 +88,9 @@ class CRLManager:
         verify_tls      Verify TLS when downloading CRLs.  Default True.
                         **Security note:** only set to false in air-gapped
                         environments with a known-good internal PKI.
-        timeout_seconds HTTP fetch timeout.  Default 30.
+        timeout_seconds HTTP fetch timeout per request.  Default 30.
+        max_workers     Maximum parallel CRL fetch threads.  Default 8.
+                        Set to 1 to restore serial behaviour.
         sources         ["distribution", "igtf"] — where to look for URLs.
     """
 
@@ -99,6 +103,7 @@ class CRLManager:
         self.max_age_hours = int(crl_config.get("max_age_hours", DEFAULT_MAX_AGE_HOURS))
         self.verify_tls = bool(crl_config.get("verify_tls", True))
         self.timeout = int(crl_config.get("timeout_seconds", 30))
+        self.max_workers = max(1, int(crl_config.get("max_workers", 8)))
         self.sources = crl_config.get("sources", ["distribution", "igtf"])
 
         if not self.verify_tls:
@@ -112,9 +117,15 @@ class CRLManager:
         """
         Fetch or refresh CRLs for all certificates in *cert_infos*.
 
+        Fetches run in parallel using a ``ThreadPoolExecutor`` with up to
+        ``max_workers`` threads (configurable; default 8).  A single
+        ``requests.Session`` is shared across all workers for connection
+        pooling and TLS session reuse.
+
         Returns a :class:`CRLUpdateResult` with counts and errors.
         """
         result = CRLUpdateResult()
+        result_lock = threading.Lock()
 
         if not self.fetch:
             logger.info("CRL fetching disabled; skipping.")
@@ -124,35 +135,63 @@ class CRLManager:
             if not dry_run:
                 os.makedirs(self.crl_path, 0o755)
 
-        for ci in cert_infos:
-            urls = self._get_crl_urls(ci)
-            if not urls:
-                result.missing.append(ci.subject)
-                continue
-
-            fetched = False
-            for url in urls:
-                try:
-                    if dry_run:
+        # dry-run: no network access; collect URLs serially and return early.
+        if dry_run:
+            for ci in cert_infos:
+                urls = self._get_crl_urls(ci)
+                if not urls:
+                    result.missing.append(ci.subject)
+                else:
+                    for url in urls[:1]:  # report first URL only, like live mode
                         logger.info("[dry-run] Would fetch CRL: %s", url)
                         result.would_fetch.append(url)
-                        fetched = True
-                        break
-                    crl_der = self._fetch_crl(url)
+            return result
+
+        import requests as _requests
+        session = _requests.Session()
+        session.verify = self.verify_tls
+
+        def _fetch_one(ci):
+            """Fetch the CRL for a single CA cert; tries each URL in order."""
+            urls = self._get_crl_urls(ci)
+            if not urls:
+                with result_lock:
+                    result.missing.append(ci.subject)
+                return
+
+            for url in urls:
+                try:
+                    crl_der = self._fetch_crl(url, session=session)
                     issuer_hash = self._get_issuer_hash(ci)
                     self._write_crl(crl_der, issuer_hash)
-                    result.updated.append(url)
-                    fetched = True
+                    with result_lock:
+                        result.updated.append(url)
                     logger.debug("Updated CRL for %s from %s", ci.subject, url)
-                    break
+                    return
                 except Exception as exc:
                     logger.warning("Failed to fetch CRL from %s: %s", url, exc)
-                    result.errors.append("CRL fetch failed for {} ({}): {}".format(
-                        ci.subject, url, exc
-                    ))
+                    with result_lock:
+                        result.errors.append(
+                            "CRL fetch failed for {} ({}): {}".format(
+                                ci.subject, url, exc
+                            )
+                        )
 
-            if not fetched and not dry_run:
+            with result_lock:
                 result.failed.append(ci.subject)
+
+        logger.info(
+            "Fetching CRLs for %d certificate(s) (max_workers=%d)",
+            len(cert_infos), self.max_workers,
+        )
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {executor.submit(_fetch_one, ci): ci for ci in cert_infos}
+            for future in as_completed(futures):
+                exc = future.exception()
+                if exc:
+                    ci = futures[future]
+                    logger.error("Unexpected error fetching CRL for %s: %s",
+                                 ci.subject, exc)
 
         return result
 
@@ -207,11 +246,11 @@ class CRLManager:
         from crab.rehash import compute_issuer_hash
         return compute_issuer_hash(ci)
 
-    def _fetch_crl(self, url):
-        # type: (str) -> bytes
+    def _fetch_crl(self, url, session=None):
+        # type: (str, object) -> bytes
         from crab.sources.http import download_to_bytes
         return download_to_bytes(url, verify_tls=self.verify_tls,
-                                 timeout=(10, self.timeout))
+                                 timeout=(10, self.timeout), session=session)
 
     def _write_crl(self, crl_der, issuer_hash):
         # type: (bytes, str) -> str
