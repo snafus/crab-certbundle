@@ -1073,6 +1073,9 @@ def cert_issue(ca_dir, cn, sans, days, profile, key_type, out_dir, cdp_url):
     click.echo("Certificate issued:")
     click.echo("  Certificate : {}".format(cert_path))
     click.echo("  Private key : {}  (mode 0600)".format(key_path))
+    fullchain_path = cert_path.replace("-cert.pem", "-fullchain.pem")
+    if os.path.isfile(fullchain_path):
+        click.echo("  Full chain  : {}".format(fullchain_path))
     click.echo("  CN          : {}".format(cn))
     click.echo("  Profile     : {}".format(profile))
     click.echo("  Valid for   : {} days".format(days))

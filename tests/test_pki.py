@@ -783,6 +783,65 @@ class TestIntermediateCA:
         sub_cert = _load_cert(os.path.join(sub, "ca-cert.pem"))
         assert cert.issuer == sub_cert.subject
 
+    def test_fullchain_written_for_intermediate_signed_cert(self, tmp_path):
+        """issue_cert writes a fullchain file when CA is an intermediate."""
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        out  = str(tmp_path / "certs")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA")
+        cert_path, _ = issue_cert(sub, cn="host.example.com", out_dir=out)
+        fullchain_path = cert_path.replace("-cert.pem", "-fullchain.pem")
+        assert os.path.isfile(fullchain_path), "fullchain file not written"
+
+    def test_fullchain_contains_leaf_and_intermediate_not_root(self, tmp_path):
+        """fullchain = leaf cert + intermediate CA cert; root excluded."""
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        out  = str(tmp_path / "certs")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA")
+        cert_path, _ = issue_cert(sub, cn="host.example.com", out_dir=out)
+        fullchain_path = cert_path.replace("-cert.pem", "-fullchain.pem")
+        with open(fullchain_path, "rb") as fh:
+            fullchain_pem = fh.read()
+        # Should have exactly 2 certs: leaf + intermediate
+        assert fullchain_pem.count(b"-----BEGIN CERTIFICATE-----") == 2
+        # First cert is the leaf
+        blocks = fullchain_pem.split(b"-----BEGIN CERTIFICATE-----")[1:]
+        certs = [x509.load_pem_x509_certificate(
+            b"-----BEGIN CERTIFICATE-----" + b) for b in blocks]
+        assert certs[0].subject.rfc4514_string() == "CN=host.example.com"
+        assert certs[1].subject.rfc4514_string() == "CN=Sub CA"
+        # Root must NOT be present
+        subjects = [c.subject.rfc4514_string() for c in certs]
+        assert "CN=Root CA" not in subjects
+
+    def test_fullchain_three_level_contains_two_intermediates(self, tmp_path):
+        """Three-level chain: fullchain has leaf + 2 intermediates, no root."""
+        root = str(tmp_path / "root")
+        mid  = str(tmp_path / "mid")
+        leaf = str(tmp_path / "leaf")
+        out  = str(tmp_path / "certs")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(mid, root, cn="Mid CA", path_length=1)
+        init_intermediate_ca(leaf, mid, cn="Leaf CA", path_length=0)
+        cert_path, _ = issue_cert(leaf, cn="host.example.com", out_dir=out)
+        fullchain_path = cert_path.replace("-cert.pem", "-fullchain.pem")
+        with open(fullchain_path, "rb") as fh:
+            fullchain_pem = fh.read()
+        assert fullchain_pem.count(b"-----BEGIN CERTIFICATE-----") == 3
+        assert b"Root CA" not in fullchain_pem
+
+    def test_no_fullchain_for_root_ca_signed_cert(self, tmp_path):
+        """When the issuing CA is a root, no fullchain file is written."""
+        root = str(tmp_path / "root")
+        out  = str(tmp_path / "certs")
+        init_ca(root, cn="Root CA")
+        cert_path, _ = issue_cert(root, cn="host.example.com", out_dir=out)
+        fullchain_path = cert_path.replace("-cert.pem", "-fullchain.pem")
+        assert not os.path.isfile(fullchain_path)
+
     def test_show_ca_info_intermediate(self, tmp_path):
         root = str(tmp_path / "root")
         sub  = str(tmp_path / "sub")

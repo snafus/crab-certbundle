@@ -678,6 +678,29 @@ def init_intermediate_ca(
 # Certificate issuance
 # ---------------------------------------------------------------------------
 
+_PEM_CERT_RE = re.compile(
+    b"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+    re.DOTALL,
+)
+
+
+def _strip_self_signed(chain_pem_bytes):
+    # type: (bytes) -> bytes
+    """
+    Return *chain_pem_bytes* with self-signed (root CA) certificates removed.
+
+    Used to build a fullchain file that contains only the leaf certificate
+    and intermediate CAs — the root must be in the relying party's trust
+    store and is conventionally excluded from presented chains.
+    """
+    result = b""
+    for block in _PEM_CERT_RE.findall(chain_pem_bytes):
+        cert = x509.load_pem_x509_certificate(block)
+        if cert.subject != cert.issuer:
+            result += block + b"\n"
+    return result
+
+
 def _parse_san(value):
     # type: (str) -> x509.GeneralName
     """
@@ -793,6 +816,14 @@ def issue_cert(
     Returns
     -------
     (cert_path, key_path)
+
+    Side effects
+    ------------
+    When the issuing CA is an intermediate (i.e. it has a ``ca-chain.pem``),
+    a ``{cn}-fullchain.pem`` is also written containing the leaf certificate
+    followed by all intermediate CA certificates (roots excluded).  This file
+    is suitable for use as the ``ssl_certificate`` / ``SSLCertificateFile``
+    directive in nginx/Apache, the XRootD ``tls.certificate`` parameter, etc.
     """
     ca = CADirectory(ca_dir_path)
     if not ca.exists():
@@ -885,7 +916,21 @@ def issue_cert(
     key_path  = os.path.join(out_dir, "{}-key.pem".format(safe_cn))
 
     _write_atomic(key_path,  _key_pem(key), mode=0o600)
-    _write_atomic(cert_path, cert.public_bytes(serialization.Encoding.PEM))
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    _write_atomic(cert_path, cert_pem)
+
+    # Write fullchain when the issuing CA is an intermediate.
+    # fullchain = leaf cert + intermediate CA certs (roots excluded).
+    if os.path.isfile(ca.chain_path):
+        with open(ca.chain_path, "rb") as fh:
+            chain_data = fh.read()
+        intermediates = _strip_self_signed(chain_data)
+        if intermediates:
+            fullchain_path = os.path.join(
+                out_dir, "{}-fullchain.pem".format(safe_cn)
+            )
+            _write_atomic(fullchain_path, cert_pem + intermediates)
+            logger.debug("Wrote fullchain to %s", fullchain_path)
 
     # Record in serial database
     ca.serial_db.append({
