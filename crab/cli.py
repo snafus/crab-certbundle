@@ -310,6 +310,14 @@ def validate(ctx, targets, no_hash_check, no_openssl):
                 dirs.append((t, cfg.profiles[t].output_path))
             elif os.path.isdir(t):
                 dirs.append((t, t))
+            elif os.path.isfile(t):
+                click.echo(
+                    "ERROR: '{}' is a file, not a CApath directory. "
+                    "`crabctl validate` only supports OpenSSL CApath directories. "
+                    "Use `crabctl list` to inspect PEM bundle files.".format(t),
+                    err=True,
+                )
+                sys.exit(2)
             else:
                 click.echo("ERROR: '{}' is not a known profile or directory".format(t), err=True)
                 sys.exit(2)
@@ -320,6 +328,18 @@ def validate(ctx, targets, no_hash_check, no_openssl):
     all_results = []
 
     for label, directory in dirs:
+        # Skip profiles whose output path is an existing file (bundle / pkcs12).
+        # Missing paths are left for validate_directory to report as an error.
+        if os.path.isfile(directory):
+            if not output_json:
+                click.echo(
+                    "Skipping '{}' — output path '{}' is not a CApath directory "
+                    "(bundle or pkcs12 outputs are not supported by validate).".format(
+                        label, directory
+                    )
+                )
+            continue
+
         if not output_json:
             click.echo("Validating '{}' ({})...".format(label, directory))
         issues = validate_directory(
@@ -329,6 +349,7 @@ def validate(ctx, targets, no_hash_check, no_openssl):
         )
 
         # CRL freshness check — only when validating a named profile with CRLs enabled
+        # and only when the output is a real CApath directory (guard is above).
         if label in cfg.profiles and cfg.profiles[label].include_crls:
             profile_cfg = cfg.profiles[label]
             crl_mgr = CRLManager(profile_cfg.crl, profile_cfg.output_path)
