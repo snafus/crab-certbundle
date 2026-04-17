@@ -5,7 +5,7 @@ Combines IGTF trust anchors and public CA roots into hashed CApath directories
 compatible with XRootD, dCache clients, curl/OpenSSL consumers, and similar middleware.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __author__ = "SRCNet Infrastructure"
 __license__ = "Apache-2.0"
 

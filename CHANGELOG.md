@@ -9,6 +9,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.4.0] — 2026-04-17
+
 ### Added
 
 - **`crabctl cert renew`** — revoke-and-reissue workflow that reads all
@@ -38,6 +42,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the two raises `TypeError` on any Python + cryptography >= 42 combination.
   Fixed: `not_valid_after` is normalised to naive UTC by stripping `tzinfo`
   when present before any arithmetic or comparison.
+- **`crabctl validate` crashes with `NotADirectoryError` on bundle/pkcs12
+  output paths** — three related problems: (1) profiles with `include_crls:
+  true` and a non-directory `output_path` caused `_load_certs_from_directory`
+  to be called on a file, crashing; (2) running validate with no arguments
+  silently attempted to validate bundle files as CApath dirs; (3) passing a
+  `.pem` file explicitly gave the unhelpful "not a known profile or directory"
+  message.  All three fixed; bundle/pkcs12 profiles are now skipped with an
+  explanatory message.  Use `crabctl list` to inspect bundle files.
 
 ---
 
@@ -314,7 +326,8 @@ Initial public release.
 
 ---
 
-[Unreleased]: https://github.com/snafus/crab-crab/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/snafus/crab-crab/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/snafus/crab-crab/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/snafus/crab-crab/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/snafus/crab-crab/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/snafus/crab-crab/releases/tag/v0.1.0

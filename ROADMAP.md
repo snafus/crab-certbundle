@@ -169,7 +169,34 @@ Core trust-directory pipeline, complete and tested.
 
 ---
 
-## 🔲 0.4.0 — Trust Policy Enhancements
+## ✅ 0.4.0 — Certificate Lifecycle (2026-04-17)
+
+### CRAB-PKI — lifecycle commands
+
+- ✅ `crabctl cert renew CERT --ca CA_DIR` — revoke-and-reissue; reads CN,
+  SANs, profile, CDP URL, and validity from the existing cert; `--days`
+  overrides period; `--reuse-key` skips key rotation; `--force` bypasses
+  the still-valid confirmation prompt; atomic-safe (issue succeeds before
+  old serial is revoked)
+- ✅ `crabctl cert sign --csr CSR --ca CA_DIR` — CSR-based issuance; private
+  key never enters CRAB; `--cn`, `--san`, `--profile`, `--days`, `--cdp-url`
+  override CSR/default values; no key file is written
+
+### Bug fixes
+
+- ✅ `renew_cert` revoke-before-issue ordering — old cert is now revoked only
+  after the new cert file is safely written; failed issuance no longer leaves
+  the CA in an unrecoverable state
+- ✅ `cert_renew` CLI naive/aware datetime mismatch — forward-compatible with
+  `cryptography >= 42` which returns timezone-aware datetimes
+- ✅ `crabctl validate` crashes with `NotADirectoryError` on bundle/pkcs12
+  output paths — skips non-directory output paths with an explanatory
+  message; explicit file targets give a clear error directing to
+  `crabctl list`
+
+---
+
+## 🔲 0.5.0 — Trust Policy Enhancements
 
 *Goal: cover remaining trust-vetting rules used in WLCG and EGI production.*
 
