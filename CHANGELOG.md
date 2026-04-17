@@ -11,6 +11,29 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.1] — 2026-04-17
+
+### Fixed
+
+- **`crabctl validate` crashes with `NotADirectoryError` on bundle/pkcs12
+  output paths** — three related problems fixed: profiles with `include_crls:
+  true` and a non-directory `output_path` crashed; running validate with no
+  arguments silently attempted to validate bundle files as CApath dirs;
+  passing a `.pem` file explicitly gave an unhelpful error message.  Bundle
+  and pkcs12 profiles are now skipped with an explanatory message.  Use
+  `crabctl list` to inspect bundle files.  (snafus/crab-crab#4)
+- **`OSError: [Errno 22] Invalid argument` / `FileNotFoundError` on trailing
+  slash in `output_path`** — when `output_path` in the config ends with `/`,
+  the staging and backup paths were computed as children of the output
+  directory rather than siblings, causing `os.rename` to fail.  Root cause
+  was in `ProfileConfig.__init__` in `config.py` where `staging_path` was
+  derived from the raw (un-normalised) `output_path`.  Fixed by applying
+  `os.path.normpath()` to both `output_path` and `staging_path` at the point
+  of first assignment in `ProfileConfig`.  Defensive normalisations also
+  added in `OutputProfile.__init__` and `_atomic_swap`.  (snafus/crab-crab#5)
+
+---
+
 ## [0.4.0] — 2026-04-17
 
 ### Added
@@ -326,7 +349,8 @@ Initial public release.
 
 ---
 
-[Unreleased]: https://github.com/snafus/crab-crab/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/snafus/crab-crab/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/snafus/crab-crab/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/snafus/crab-crab/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/snafus/crab-crab/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/snafus/crab-crab/compare/v0.1.0...v0.2.0
