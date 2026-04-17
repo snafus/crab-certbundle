@@ -22,6 +22,7 @@ Public API
 init_ca                Create a new self-signed root CA.
 init_intermediate_ca   Create an intermediate CA signed by an existing CA.
 issue_cert             Issue a certificate signed by a CA.
+renew_cert             Revoke an existing certificate and re-issue with the same parameters.
 revoke_cert            Revoke a certificate and regenerate the CRL.
 generate_crl           Regenerate the CRL from the serial database.
 show_ca_info           Return a dict of CA details.
@@ -733,6 +734,93 @@ def _parse_san(value):
         return x509.DNSName(value)
 
 
+def _key_type_from_public_key(pub):
+    # type: (...) -> str
+    """Infer a KEY_TYPES string from a public key object."""
+    if isinstance(pub, _ed25519_mod.Ed25519PublicKey):
+        return "ed25519"
+    if isinstance(pub, _rsa_mod.RSAPublicKey):
+        return "rsa4096" if pub.key_size >= 3500 else "rsa2048"
+    if isinstance(pub, _ec_mod.EllipticCurvePublicKey):
+        return "ecdsa-p384" if isinstance(pub.curve, _ec_mod.SECP384R1) else "ecdsa-p256"
+    raise PKIError("Unrecognised public key type: {}".format(type(pub).__name__))
+
+
+def _profile_from_cert(cert):
+    # type: (x509.Certificate) -> str
+    """
+    Infer the closest CERT_PROFILES name from a certificate's EKU extension.
+
+    Returns ``grid-host`` when both serverAuth and clientAuth are present,
+    ``client`` when only clientAuth is present, and ``server`` otherwise
+    (including when there is no EKU extension).
+    """
+    try:
+        eku = cert.extensions.get_extension_for_class(
+            x509.ExtendedKeyUsage
+        ).value
+        oids = set(eku)
+        has_server = ExtendedKeyUsageOID.SERVER_AUTH in oids
+        has_client = ExtendedKeyUsageOID.CLIENT_AUTH in oids
+        if has_server and has_client:
+            return "grid-host"
+        if has_client:
+            return "client"
+    except x509.ExtensionNotFound:
+        pass
+    return "server"
+
+
+def _sans_from_cert(cert):
+    # type: (x509.Certificate) -> List[str]
+    """
+    Extract SANs from *cert* as prefixed strings (``DNS:…``, ``IP:…``, ``EMAIL:…``).
+
+    Returns an empty list if no SubjectAlternativeName extension is present.
+    Unrecognised GeneralName types are silently skipped.
+    """
+    import ipaddress as _ipaddress
+    result = []
+    try:
+        san_ext = cert.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName
+        ).value
+        for gn in san_ext:
+            if isinstance(gn, x509.DNSName):
+                result.append("DNS:{}".format(gn.value))
+            elif isinstance(gn, x509.IPAddress):
+                result.append("IP:{}".format(str(gn.value)))
+            elif isinstance(gn, x509.RFC822Name):
+                result.append("EMAIL:{}".format(gn.value))
+    except x509.ExtensionNotFound:
+        pass
+    return result
+
+
+def _cdp_url_from_cert(cert):
+    # type: (x509.Certificate) -> Optional[str]
+    """Return the first CDP URI embedded in *cert*, or ``None``."""
+    try:
+        cdp_ext = cert.extensions.get_extension_for_class(
+            x509.CRLDistributionPoints
+        ).value
+        for dp in cdp_ext:
+            if dp.full_name:
+                for gn in dp.full_name:
+                    if isinstance(gn, x509.UniformResourceIdentifier):
+                        return gn.value
+    except x509.ExtensionNotFound:
+        pass
+    return None
+
+
+def _days_from_cert(cert):
+    # type: (x509.Certificate) -> int
+    """Return the validity period of *cert* in whole days (minimum 1)."""
+    delta = cert.not_valid_after - cert.not_valid_before
+    return max(1, delta.days)
+
+
 def _key_usage_for_profile(profile, no_key_encipherment):
     # type: (str, bool) -> x509.KeyUsage
     """
@@ -784,6 +872,138 @@ def _eku_for_profile(profile):
             ExtendedKeyUsageOID.CLIENT_AUTH,
         ])
     raise PKIError("Unknown profile {!r}. Valid: {}".format(profile, ", ".join(CERT_PROFILES)))
+
+
+def _issue_cert_with_key(ca, ca_cert, ca_key, key, cn, sans, days, profile, cdp_url, out_dir):
+    # type: (...) -> Tuple[str, str]
+    """
+    Core certificate-signing operation.  Builds, signs, records, and writes
+    a certificate using an already-loaded *key*.
+
+    This is the shared implementation used by :func:`issue_cert` (which
+    generates a fresh key) and :func:`renew_cert` (which may reuse an
+    existing key).
+
+    Parameters
+    ----------
+    ca:       :class:`CADirectory` for the issuing CA.
+    ca_cert:  Loaded CA certificate.
+    ca_key:   Loaded CA private key.
+    key:      Private key for the new certificate (generated or loaded).
+    cn:       Common Name.
+    sans:     SAN strings (``DNS:…``, ``IP:…``, ``EMAIL:…``).
+    days:     Validity period in days.
+    profile:  ``server``, ``client``, or ``grid-host``.
+    cdp_url:  Optional CRL Distribution Point URL.
+    out_dir:  Directory to write output files (must already exist).
+
+    Returns
+    -------
+    (cert_path, key_path)
+    """
+    pub    = key.public_key()
+    no_enc = _no_key_encipherment(key)
+
+    # Build SAN list.  Auto-add CN as a DNS SAN for hostnames.
+    san_objects  = []
+    explicit_dns = set()
+    for s in (sans or []):
+        gn = _parse_san(s)
+        san_objects.append(gn)
+        if isinstance(gn, x509.DNSName):
+            explicit_dns.add(gn.value)
+
+    if "." in cn and cn not in explicit_dns:
+        san_objects.insert(0, x509.DNSName(cn))
+
+    if not san_objects:
+        raise PKIError(
+            "No Subject Alternative Names could be determined. "
+            "Provide a hostname as --cn or supply --san values."
+        )
+
+    subject   = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    serial    = ca.serial_db.next_serial()
+    now       = _utcnow_naive()
+    not_after = now + timedelta(days=days)
+
+    ca_ski = ca_cert.extensions.get_extension_for_class(
+        x509.SubjectKeyIdentifier
+    ).value
+
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(ca_cert.subject)
+        .public_key(pub)
+        .serial_number(serial)
+        .not_valid_before(now)
+        .not_valid_after(not_after)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(pub), critical=False)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski),
+            critical=False,
+        )
+        .add_extension(_key_usage_for_profile(profile, no_enc), critical=True)
+        .add_extension(_eku_for_profile(profile), critical=False)
+        .add_extension(x509.SubjectAlternativeName(san_objects), critical=False)
+    )
+
+    if cdp_url:
+        builder = builder.add_extension(
+            x509.CRLDistributionPoints([
+                x509.DistributionPoint(
+                    full_name=[x509.UniformResourceIdentifier(cdp_url)],
+                    relative_name=None,
+                    reasons=None,
+                    crl_issuer=None,
+                )
+            ]),
+            critical=False,
+        )
+
+    cert     = builder.sign(ca_key, _sign_hash(ca_key))
+    fp       = _cert_fp(cert)
+    safe_cn  = _safe_filename(cn)
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+
+    cert_path = os.path.join(out_dir, "{}-cert.pem".format(safe_cn))
+    key_path  = os.path.join(out_dir, "{}-key.pem".format(safe_cn))
+
+    _write_atomic(key_path,  _key_pem(key), mode=0o600)
+    _write_atomic(cert_path, cert_pem)
+
+    # Write fullchain when the issuing CA is an intermediate.
+    # fullchain = leaf cert + intermediate CA certs (roots excluded).
+    if os.path.isfile(ca.chain_path):
+        with open(ca.chain_path, "rb") as fh:
+            chain_data = fh.read()
+        intermediates = _strip_self_signed(chain_data)
+        if intermediates:
+            fullchain_path = os.path.join(out_dir, "{}-fullchain.pem".format(safe_cn))
+            _write_atomic(fullchain_path, cert_pem + intermediates)
+            logger.debug("Wrote fullchain to %s", fullchain_path)
+
+    ca.serial_db.append({
+        "serial":             serial,
+        "cn":                 cn,
+        "subject":            cert.subject.rfc4514_string(),
+        "fingerprint_sha256": fp,
+        "profile":            profile,
+        "issued_at":          _format_dt(now),
+        "expires_at":         _format_dt(not_after),
+        "cert_file":          os.path.relpath(cert_path, ca.path),
+        "revoked":            False,
+        "revoked_at":         None,
+        "revoke_reason":      None,
+    })
+
+    logger.info(
+        "Issued cert serial=%d cn=%r profile=%s valid until %s",
+        serial, cn, profile, _format_date(not_after),
+    )
+    return cert_path, key_path
 
 
 def issue_cert(
@@ -841,117 +1061,8 @@ def issue_cert(
         out_dir = ca.issued_dir
     os.makedirs(out_dir, mode=0o755, exist_ok=True)
 
-    # Build SAN list.  The CN is prepended as a DNS SAN when it contains a
-    # dot (hostname heuristic) and is not already present in explicit SANs.
-    san_objects = []
-    explicit_dns = set()
-
-    for s in (sans or []):
-        gn = _parse_san(s)
-        san_objects.append(gn)
-        if isinstance(gn, x509.DNSName):
-            explicit_dns.add(gn.value)
-
-    if "." in cn and cn not in explicit_dns:
-        san_objects.insert(0, x509.DNSName(cn))
-
-    if not san_objects:
-        raise PKIError(
-            "No Subject Alternative Names could be determined. "
-            "Provide a hostname as --cn or supply --san values."
-        )
-
     key = _generate_key(key_type)
-    pub = key.public_key()
-    no_enc = _no_key_encipherment(key)
-
-    subject  = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
-    serial   = ca.serial_db.next_serial()
-    now      = _utcnow_naive()
-    not_after = now + timedelta(days=days)
-
-    # Retrieve CA's SKI for AKI on the issued cert
-    ca_ski = ca_cert.extensions.get_extension_for_class(
-        x509.SubjectKeyIdentifier
-    ).value
-
-    builder = (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(ca_cert.subject)
-        .public_key(pub)
-        .serial_number(serial)
-        .not_valid_before(now)
-        .not_valid_after(not_after)
-        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-        .add_extension(x509.SubjectKeyIdentifier.from_public_key(pub), critical=False)
-        .add_extension(
-            x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski),
-            critical=False,
-        )
-        .add_extension(_key_usage_for_profile(profile, no_enc), critical=True)
-        .add_extension(_eku_for_profile(profile), critical=False)
-        .add_extension(x509.SubjectAlternativeName(san_objects), critical=False)
-    )
-
-    if cdp_url:
-        builder = builder.add_extension(
-            x509.CRLDistributionPoints([
-                x509.DistributionPoint(
-                    full_name=[x509.UniformResourceIdentifier(cdp_url)],
-                    relative_name=None,
-                    reasons=None,
-                    crl_issuer=None,
-                )
-            ]),
-            critical=False,
-        )
-
-    cert = builder.sign(ca_key, _sign_hash(ca_key))
-    fp   = _cert_fp(cert)
-
-    # Write output files
-    safe_cn   = _safe_filename(cn)
-    cert_path = os.path.join(out_dir, "{}-cert.pem".format(safe_cn))
-    key_path  = os.path.join(out_dir, "{}-key.pem".format(safe_cn))
-
-    _write_atomic(key_path,  _key_pem(key), mode=0o600)
-    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
-    _write_atomic(cert_path, cert_pem)
-
-    # Write fullchain when the issuing CA is an intermediate.
-    # fullchain = leaf cert + intermediate CA certs (roots excluded).
-    if os.path.isfile(ca.chain_path):
-        with open(ca.chain_path, "rb") as fh:
-            chain_data = fh.read()
-        intermediates = _strip_self_signed(chain_data)
-        if intermediates:
-            fullchain_path = os.path.join(
-                out_dir, "{}-fullchain.pem".format(safe_cn)
-            )
-            _write_atomic(fullchain_path, cert_pem + intermediates)
-            logger.debug("Wrote fullchain to %s", fullchain_path)
-
-    # Record in serial database
-    ca.serial_db.append({
-        "serial":             serial,
-        "cn":                 cn,
-        "subject":            cert.subject.rfc4514_string(),
-        "fingerprint_sha256": fp,
-        "profile":            profile,
-        "issued_at":          _format_dt(now),
-        "expires_at":         _format_dt(not_after),
-        "cert_file":          os.path.relpath(cert_path, ca.path),
-        "revoked":            False,
-        "revoked_at":         None,
-        "revoke_reason":      None,
-    })
-
-    logger.info(
-        "Issued cert serial=%d cn=%r profile=%s valid until %s",
-        serial, cn, profile, _format_date(not_after),
-    )
-    return cert_path, key_path
+    return _issue_cert_with_key(ca, ca_cert, ca_key, key, cn, sans, days, profile, cdp_url, out_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -995,6 +1106,106 @@ def revoke_cert(ca_dir_path, cert_path, reason="unspecified"):
     logger.info("Revoked serial=%d reason=%s", serial, reason)
 
     generate_crl(ca_dir_path)
+
+
+# ---------------------------------------------------------------------------
+# Certificate renewal
+# ---------------------------------------------------------------------------
+
+def renew_cert(
+    ca_dir_path,            # type: str
+    cert_path,              # type: str
+    days=None,              # type: Optional[int]
+    reuse_key=False,        # type: bool
+    out_dir=None,           # type: Optional[str]
+):
+    # type: (...) -> Tuple[str, str]
+    """
+    Renew a certificate by revoking the old one and issuing a replacement
+    with the same CN, SANs, profile, CDP URL, and validity period.
+
+    The new certificate is written to the same filenames as the old one
+    (derived from the CN), so consuming configurations — TLS server configs,
+    volume mounts, etc. — do not need updating; only a service reload or
+    restart is required.
+
+    Parameters
+    ----------
+    ca_dir_path: Path to the CA directory that originally issued the cert.
+    cert_path:   Path to the PEM certificate to renew.
+    days:        Validity period for the new cert in days.  Defaults to the
+                 same period as the original (``notAfter - notBefore``).
+    reuse_key:   If ``True``, reuse the existing private key instead of
+                 generating a fresh one.  The key file must be present
+                 alongside the cert (same directory, ``{cn}-key.pem``).
+                 Defaults to ``False`` (key rotation).
+    out_dir:     Directory to write the new cert and key.  Defaults to the
+                 directory that contains *cert_path*.
+
+    Returns
+    -------
+    (cert_path, key_path) — paths to the newly written certificate and key.
+
+    Raises
+    ------
+    PKIError  if the CA or cert is not found, the cert was not issued by
+              this CA, the key file is missing when ``reuse_key=True``, or
+              on I/O errors.
+    """
+    ca = CADirectory(ca_dir_path)
+    if not ca.exists():
+        raise PKIError("No CA found in '{}'.".format(ca_dir_path))
+
+    if not os.path.isfile(cert_path):
+        raise PKIError("Certificate not found: {}".format(cert_path))
+
+    with open(cert_path, "rb") as fh:
+        old_cert = x509.load_pem_x509_certificate(fh.read())
+
+    # Extract renewal parameters from the existing certificate.
+    cn_attrs = old_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    if not cn_attrs:
+        raise PKIError("Certificate has no Common Name — cannot determine renewal parameters.")
+    cn      = cn_attrs[0].value
+    sans    = _sans_from_cert(old_cert)
+    profile = _profile_from_cert(old_cert)
+    cdp_url = _cdp_url_from_cert(old_cert)
+
+    if days is None:
+        days = _days_from_cert(old_cert)
+
+    if out_dir is None:
+        out_dir = os.path.dirname(os.path.abspath(cert_path))
+
+    os.makedirs(out_dir, mode=0o755, exist_ok=True)
+
+    if reuse_key:
+        safe_cn      = _safe_filename(cn)
+        existing_key = os.path.join(out_dir, "{}-key.pem".format(safe_cn))
+        if not os.path.isfile(existing_key):
+            raise PKIError(
+                "Cannot reuse key: no key file found at {}".format(existing_key)
+            )
+        with open(existing_key, "rb") as fh:
+            key = serialization.load_pem_private_key(fh.read(), password=None)
+    else:
+        key = _generate_key(_key_type_from_public_key(old_cert.public_key()))
+
+    ca_cert = ca.load_cert()
+    ca_key  = ca.load_key()
+
+    # Revoke the old certificate first (reason: superseded).
+    # The old cert file is overwritten by _issue_cert_with_key below.
+    revoke_cert(ca_dir_path, cert_path, reason="superseded")
+
+    logger.info(
+        "Renewing cert cn=%r profile=%s days=%d reuse_key=%s",
+        cn, profile, days, reuse_key,
+    )
+
+    return _issue_cert_with_key(
+        ca, ca_cert, ca_key, key, cn, sans, days, profile, cdp_url, out_dir
+    )
 
 
 # ---------------------------------------------------------------------------

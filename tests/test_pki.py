@@ -22,8 +22,14 @@ from crab.pki import (
     init_intermediate_ca,
     issue_cert,
     list_issued,
+    renew_cert,
     revoke_cert,
     show_ca_info,
+    _cdp_url_from_cert,
+    _days_from_cert,
+    _key_type_from_public_key,
+    _profile_from_cert,
+    _sans_from_cert,
 )
 
 
@@ -972,6 +978,371 @@ class TestIntermediateCACLI:
             main,
             ["-q", "ca", "intermediate", str(tmp_path / "sub"),
              "--parent", str(tmp_path / "noparent"), "--name", "Sub CA"],
+        )
+        assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Cert extraction helpers (_profile_from_cert, _sans_from_cert, etc.)
+# ---------------------------------------------------------------------------
+
+class TestCertExtractionHelpers:
+    """Unit tests for the private helpers that read parameters from a cert."""
+
+    def _issue(self, ca_dir, **kw):
+        out = os.path.join(ca_dir, "issued")
+        os.makedirs(out, exist_ok=True)
+        cert_path, _ = issue_cert(ca_dir, out_dir=out, **kw)
+        with open(cert_path, "rb") as fh:
+            return x509.load_pem_x509_certificate(fh.read())
+
+    def test_profile_server(self, ca_dir):
+        cert = self._issue(ca_dir, cn="host.example.com", profile="server")
+        assert _profile_from_cert(cert) == "server"
+
+    def test_profile_client(self, ca_dir):
+        cert = self._issue(ca_dir, cn="alice", profile="client",
+                           sans=["EMAIL:alice@example.com"])
+        assert _profile_from_cert(cert) == "client"
+
+    def test_profile_grid_host(self, ca_dir):
+        cert = self._issue(ca_dir, cn="xrd.example.com", profile="grid-host")
+        assert _profile_from_cert(cert) == "grid-host"
+
+    def test_sans_dns(self, ca_dir):
+        cert = self._issue(ca_dir, cn="host.example.com")
+        sans = _sans_from_cert(cert)
+        assert "DNS:host.example.com" in sans
+
+    def test_sans_multiple(self, ca_dir):
+        cert = self._issue(ca_dir, cn="host.example.com",
+                           sans=["DNS:alt.example.com", "IP:10.0.0.1"])
+        sans = _sans_from_cert(cert)
+        assert "DNS:host.example.com" in sans
+        assert "DNS:alt.example.com" in sans
+        assert "IP:10.0.0.1" in sans
+
+    def test_sans_empty_when_no_extension(self, ca_dir):
+        # client cert with bare CN — CN without dot means no auto-DNS SAN,
+        # so we must supply one explicitly
+        cert = self._issue(ca_dir, cn="alice", profile="client",
+                           sans=["EMAIL:alice@example.com"])
+        sans = _sans_from_cert(cert)
+        assert "EMAIL:alice@example.com" in sans
+
+    def test_cdp_url_present(self, ca_dir):
+        cert = self._issue(ca_dir, cn="host.example.com",
+                           cdp_url="http://crl.example.com/ca.crl")
+        assert _cdp_url_from_cert(cert) == "http://crl.example.com/ca.crl"
+
+    def test_cdp_url_absent(self, ca_dir):
+        cert = self._issue(ca_dir, cn="host.example.com")
+        assert _cdp_url_from_cert(cert) is None
+
+    def test_days_from_cert(self, ca_dir):
+        cert = self._issue(ca_dir, cn="host.example.com", days=42)
+        assert _days_from_cert(cert) == 42
+
+    def test_key_type_rsa2048(self, ca_dir):
+        cert = self._issue(ca_dir, cn="host.example.com", key_type="rsa2048")
+        assert _key_type_from_public_key(cert.public_key()) == "rsa2048"
+
+    def test_key_type_ecdsa_p256(self, ca_dir):
+        cert = self._issue(ca_dir, cn="host.example.com", key_type="ecdsa-p256")
+        assert _key_type_from_public_key(cert.public_key()) == "ecdsa-p256"
+
+    def test_key_type_ecdsa_p384(self, ca_dir):
+        cert = self._issue(ca_dir, cn="host.example.com", key_type="ecdsa-p384")
+        assert _key_type_from_public_key(cert.public_key()) == "ecdsa-p384"
+
+    def test_key_type_ed25519(self, ca_dir_ed25519):
+        cert = self._issue(ca_dir_ed25519, cn="host.example.com",
+                           key_type="ed25519")
+        assert _key_type_from_public_key(cert.public_key()) == "ed25519"
+
+
+# ---------------------------------------------------------------------------
+# renew_cert
+# ---------------------------------------------------------------------------
+
+class TestRenewCert:
+    """Tests for renew_cert — the revoke-and-reissue flow."""
+
+    def _issue(self, ca_dir, **kw):
+        out = os.path.join(ca_dir, "issued")
+        os.makedirs(out, exist_ok=True)
+        kw.setdefault("cn", "host.example.com")
+        return issue_cert(ca_dir, out_dir=out, **kw)
+
+    # -- basic renewal -------------------------------------------------------
+
+    def test_returns_same_paths(self, ca_dir):
+        cert_path, key_path = self._issue(ca_dir)
+        new_cert, new_key = renew_cert(ca_dir, cert_path)
+        assert new_cert == cert_path
+        assert new_key == key_path
+
+    def test_new_cert_is_valid_pem(self, ca_dir):
+        cert_path, _ = self._issue(ca_dir)
+        renew_cert(ca_dir, cert_path)
+        with open(cert_path, "rb") as fh:
+            cert = x509.load_pem_x509_certificate(fh.read())
+        assert cert.subject.get_attributes_for_oid(
+            x509.oid.NameOID.COMMON_NAME
+        )[0].value == "host.example.com"
+
+    def test_old_cert_revoked_in_db(self, ca_dir):
+        cert_path, _ = self._issue(ca_dir)
+        with open(cert_path, "rb") as fh:
+            old_cert = x509.load_pem_x509_certificate(fh.read())
+        old_fp = ":".join("{:02X}".format(b) for b in old_cert.fingerprint(
+            __import__("cryptography.hazmat.primitives.hashes", fromlist=["SHA256"]).SHA256()
+        ))
+        renew_cert(ca_dir, cert_path)
+        from crab.pki import CADirectory as _CAD
+        records = _CAD(ca_dir).serial_db.records()
+        revoked = [r for r in records if r.get("fingerprint_sha256") == old_fp]
+        assert len(revoked) == 1
+        assert revoked[0]["revoked"] is True
+        assert revoked[0]["revoke_reason"] == "superseded"
+
+    def test_new_cert_in_db(self, ca_dir):
+        cert_path, _ = self._issue(ca_dir)
+        renew_cert(ca_dir, cert_path)
+        records = CADirectory(ca_dir).serial_db.records()
+        active = [r for r in records if not r.get("revoked")]
+        assert len(active) == 1
+        assert active[0]["cn"] == "host.example.com"
+
+    def test_serial_db_grows_by_one(self, ca_dir):
+        cert_path, _ = self._issue(ca_dir)
+        before = len(CADirectory(ca_dir).serial_db.records())
+        renew_cert(ca_dir, cert_path)
+        after = len(CADirectory(ca_dir).serial_db.records())
+        assert after == before + 1
+
+    def test_new_key_is_different(self, ca_dir):
+        cert_path, key_path = self._issue(ca_dir, key_type="rsa2048")
+        with open(key_path, "rb") as fh:
+            old_key_bytes = fh.read()
+        renew_cert(ca_dir, cert_path)
+        with open(key_path, "rb") as fh:
+            new_key_bytes = fh.read()
+        assert old_key_bytes != new_key_bytes
+
+    def test_crl_regenerated(self, ca_dir):
+        cert_path, _ = self._issue(ca_dir)
+        renew_cert(ca_dir, cert_path)
+        crl_path = os.path.join(ca_dir, "crl.pem")
+        assert os.path.isfile(crl_path)
+        with open(crl_path, "rb") as fh:
+            crl = x509.load_pem_x509_crl(fh.read())
+        assert len(list(crl)) == 1
+
+    # -- days ----------------------------------------------------------------
+
+    def test_default_days_matches_original(self, ca_dir):
+        cert_path, _ = self._issue(ca_dir, days=42)
+        renew_cert(ca_dir, cert_path)
+        with open(cert_path, "rb") as fh:
+            new_cert = x509.load_pem_x509_certificate(fh.read())
+        delta = (new_cert.not_valid_after - new_cert.not_valid_before).days
+        assert delta == 42
+
+    def test_override_days(self, ca_dir):
+        cert_path, _ = self._issue(ca_dir, days=365)
+        renew_cert(ca_dir, cert_path, days=90)
+        with open(cert_path, "rb") as fh:
+            new_cert = x509.load_pem_x509_certificate(fh.read())
+        delta = (new_cert.not_valid_after - new_cert.not_valid_before).days
+        assert delta == 90
+
+    # -- reuse_key -----------------------------------------------------------
+
+    def test_reuse_key_keeps_key_bytes(self, ca_dir):
+        cert_path, key_path = self._issue(ca_dir)
+        with open(key_path, "rb") as fh:
+            original_key_bytes = fh.read()
+        renew_cert(ca_dir, cert_path, reuse_key=True)
+        with open(key_path, "rb") as fh:
+            new_key_bytes = fh.read()
+        assert original_key_bytes == new_key_bytes
+
+    def test_reuse_key_cert_still_valid(self, ca_dir):
+        cert_path, _ = self._issue(ca_dir)
+        renew_cert(ca_dir, cert_path, reuse_key=True)
+        with open(cert_path, "rb") as fh:
+            new_cert = x509.load_pem_x509_certificate(fh.read())
+        assert new_cert.subject.get_attributes_for_oid(
+            x509.oid.NameOID.COMMON_NAME
+        )[0].value == "host.example.com"
+
+    def test_reuse_key_missing_key_file_raises(self, ca_dir, tmp_path):
+        cert_path, key_path = self._issue(ca_dir)
+        os.unlink(key_path)
+        with pytest.raises(PKIError, match="no key file found"):
+            renew_cert(ca_dir, cert_path, reuse_key=True)
+
+    # -- profile and SAN preservation ----------------------------------------
+
+    def test_preserves_profile_grid_host(self, ca_dir):
+        cert_path, _ = self._issue(ca_dir, cn="xrd.example.com", profile="grid-host")
+        renew_cert(ca_dir, cert_path)
+        cert = _load_cert(cert_path)
+        eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+        from cryptography.x509.oid import ExtendedKeyUsageOID as _EKU
+        assert _EKU.SERVER_AUTH in list(eku)
+        assert _EKU.CLIENT_AUTH in list(eku)
+
+    def test_preserves_sans(self, ca_dir):
+        cert_path, _ = self._issue(
+            ca_dir, cn="host.example.com",
+            sans=["DNS:alt.example.com", "IP:192.168.1.1"]
+        )
+        renew_cert(ca_dir, cert_path)
+        cert = _load_cert(cert_path)
+        san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        dns_values = {gn.value for gn in san_ext if isinstance(gn, x509.DNSName)}
+        assert "host.example.com" in dns_values
+        assert "alt.example.com" in dns_values
+
+    def test_preserves_cdp_url(self, ca_dir):
+        cert_path, _ = self._issue(
+            ca_dir, cn="host.example.com",
+            cdp_url="http://crl.example.com/ca.crl"
+        )
+        renew_cert(ca_dir, cert_path)
+        cert = _load_cert(cert_path)
+        cdp = cert.extensions.get_extension_for_class(
+            x509.CRLDistributionPoints
+        ).value
+        uris = [
+            gn.value
+            for dp in cdp
+            for gn in (dp.full_name or [])
+            if isinstance(gn, x509.UniformResourceIdentifier)
+        ]
+        assert "http://crl.example.com/ca.crl" in uris
+
+    # -- error cases ---------------------------------------------------------
+
+    def test_missing_cert_raises(self, ca_dir, tmp_path):
+        with pytest.raises(PKIError, match="not found"):
+            renew_cert(ca_dir, str(tmp_path / "nonexistent.pem"))
+
+    def test_missing_ca_raises(self, tmp_path):
+        with pytest.raises(PKIError, match="No CA found"):
+            renew_cert(str(tmp_path / "noca"), "/dev/null")
+
+    # -- fullchain for intermediate CA ---------------------------------------
+
+    def test_renew_via_intermediate_writes_fullchain(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA", days=30)
+        init_intermediate_ca(sub, root, cn="Sub CA", days=30)
+        out = str(tmp_path / "issued")
+        os.makedirs(out)
+        cert_path, _ = issue_cert(sub, cn="host.example.com", out_dir=out)
+        fullchain = cert_path.replace("-cert.pem", "-fullchain.pem")
+        assert os.path.isfile(fullchain)
+
+        new_cert_path, _ = renew_cert(sub, cert_path)
+        assert os.path.isfile(new_cert_path.replace("-cert.pem", "-fullchain.pem"))
+
+
+# ---------------------------------------------------------------------------
+# cert renew CLI
+# ---------------------------------------------------------------------------
+
+class TestCertRenewCLI:
+    """CLI-level tests for ``crabctl cert renew``."""
+
+    @pytest.fixture
+    def runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    @pytest.fixture
+    def ca_and_cert(self, tmp_path):
+        ca = str(tmp_path / "ca")
+        init_ca(ca, cn="Test CA", days=30)
+        cert_path, key_path = issue_cert(ca, cn="host.example.com")
+        return ca, cert_path, key_path
+
+    def test_renew_succeeds(self, runner, ca_and_cert):
+        from crab.cli import main
+        ca, cert_path, _ = ca_and_cert
+        result = runner.invoke(
+            main,
+            ["-q", "cert", "renew", "--ca", ca, "--force", cert_path],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert "renewed" in result.output.lower()
+
+    def test_renew_shows_cert_path(self, runner, ca_and_cert):
+        from crab.cli import main
+        ca, cert_path, _ = ca_and_cert
+        result = runner.invoke(
+            main,
+            ["-q", "cert", "renew", "--ca", ca, "--force", cert_path],
+            catch_exceptions=False,
+        )
+        assert cert_path in result.output
+
+    def test_renew_with_days_override(self, runner, ca_and_cert):
+        from crab.cli import main
+        ca, cert_path, _ = ca_and_cert
+        result = runner.invoke(
+            main,
+            ["-q", "cert", "renew", "--ca", ca, "--force", "--days", "90", cert_path],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        with open(cert_path, "rb") as fh:
+            cert = x509.load_pem_x509_certificate(fh.read())
+        delta = (cert.not_valid_after - cert.not_valid_before).days
+        assert delta == 90
+
+    def test_reuse_key_flag(self, runner, ca_and_cert):
+        from crab.cli import main
+        ca, cert_path, key_path = ca_and_cert
+        with open(key_path, "rb") as fh:
+            old_key_bytes = fh.read()
+        result = runner.invoke(
+            main,
+            ["-q", "cert", "renew", "--ca", ca, "--force", "--reuse-key", cert_path],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        with open(key_path, "rb") as fh:
+            new_key_bytes = fh.read()
+        assert old_key_bytes == new_key_bytes
+
+    def test_prompts_when_cert_still_valid(self, runner, ca_and_cert):
+        from crab.cli import main
+        ca, cert_path, _ = ca_and_cert
+        # Answer "no" to the confirmation prompt — should exit 0 without renewing
+        result = runner.invoke(
+            main,
+            ["-q", "cert", "renew", "--ca", ca, cert_path],
+            input="n\n",
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        # DB should still have only 1 active cert (original, not revoked)
+        records = CADirectory(ca).serial_db.records()
+        assert sum(1 for r in records if not r.get("revoked")) == 1
+
+    def test_error_on_missing_cert(self, runner, tmp_path):
+        from crab.cli import main
+        ca = str(tmp_path / "ca")
+        init_ca(ca, cn="Test CA", days=30)
+        result = runner.invoke(
+            main,
+            ["-q", "cert", "renew", "--ca", ca, "--force",
+             str(tmp_path / "nosuchcert.pem")],
         )
         assert result.exit_code != 0
 

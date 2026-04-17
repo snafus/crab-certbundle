@@ -36,8 +36,8 @@ from crab.crl import CRLManager
 from crab.output import OutputProfile, build_output
 from crab.policy import PolicyEngine
 from crab.pki import (
-    init_ca, init_intermediate_ca, issue_cert, revoke_cert, generate_crl,
-    show_ca_info, list_issued,
+    init_ca, init_intermediate_ca, issue_cert, renew_cert, revoke_cert,
+    generate_crl, show_ca_info, list_issued,
     CERT_PROFILES, KEY_TYPES, REVOKE_REASONS,
     PKIError, CADirectory,
 )
@@ -1113,6 +1113,77 @@ def cert_revoke(ca_dir, cert_file, reason):
     click.echo("Certificate revoked.")
     click.echo("  CRL updated : {}".format(ca.crl_path))
     click.echo("  Reason      : {}".format(reason))
+
+
+@cert_group.command("renew")
+@click.option("--ca", "ca_dir", required=True, metavar="CA_DIR",
+              help="Path to the CA directory that issued the certificate.")
+@click.argument("cert_file", metavar="CERT")
+@click.option("--days", default=None, type=int,
+              help="Validity period for the new cert (default: match original).")
+@click.option("--reuse-key", is_flag=True, default=False,
+              help="Keep the existing private key instead of generating a fresh one.")
+@click.option("--force", is_flag=True, default=False,
+              help="Renew without confirmation when the certificate is still valid.")
+def cert_renew(ca_dir, cert_file, days, reuse_key, force):
+    """
+    Renew CERT, revoking the old certificate and issuing a replacement.
+
+    CN, SANs, profile, CDP URL, and validity period are read from the
+    existing certificate; no flags need to be repeated.  The new files
+    are written to the same paths so consuming configurations (TLS server
+    configs, volume mounts) do not need updating — only a service reload.
+
+    \b
+    Examples:
+        crabctl cert renew --ca ./my-ca ./my-ca/issued/host.example.com-cert.pem
+        crabctl cert renew --ca ./my-ca ./my-ca/issued/host.example.com-cert.pem \\
+            --days 90
+        crabctl cert renew --ca ./my-ca ./my-ca/issued/host.example.com-cert.pem \\
+            --reuse-key --force
+    """
+    from cryptography import x509 as _x509
+    from datetime import datetime as _datetime
+
+    # Warn before revoking a cert that still has life left in it.
+    try:
+        with open(cert_file, "rb") as fh:
+            old_cert = _x509.load_pem_x509_certificate(fh.read())
+    except (IOError, OSError, ValueError) as exc:
+        click.echo("ERROR: Cannot read certificate: {}".format(exc), err=True)
+        sys.exit(1)
+
+    now = _datetime.utcnow()
+    days_remaining = (old_cert.not_valid_after - now).days
+    if old_cert.not_valid_after > now and not force:
+        click.echo(
+            "Certificate is still valid ({} day(s) remaining).".format(days_remaining)
+        )
+        if not click.confirm("Revoke and renew anyway?"):
+            sys.exit(0)
+
+    try:
+        cert_path, key_path = renew_cert(
+            ca_dir,
+            cert_file,
+            days=days,
+            reuse_key=reuse_key,
+        )
+    except PKIError as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+    except (IOError, OSError) as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+
+    click.echo("Certificate renewed:")
+    click.echo("  Certificate : {}".format(cert_path))
+    click.echo("  Private key : {}  ({})".format(
+        key_path, "reused" if reuse_key else "new, mode 0600"
+    ))
+    fullchain_path = cert_path.replace("-cert.pem", "-fullchain.pem")
+    if os.path.isfile(fullchain_path):
+        click.echo("  Full chain  : {}".format(fullchain_path))
 
 
 @cert_group.command("list")
