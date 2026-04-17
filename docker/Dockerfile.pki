@@ -1,0 +1,66 @@
+# crab-pki — PKI init-container image for Docker Compose
+#
+# Extends the crab production image with the compose-pki.sh helper
+# script and a /pki volume for CA and certificate storage.
+#
+# Build (base image must be built first):
+#   docker build -f docker/Dockerfile     -t crab:latest     .
+#   docker build -f docker/Dockerfile.pki -t crab-pki:latest .
+#
+# Or with a single buildx bake target (see docker/bake.hcl if present).
+#
+# Usage — standalone:
+#   docker run --rm -v pki-data:/pki \
+#     -e CRAB_SERVICES="db api worker" \
+#     crab-pki:latest init
+#
+#   docker run --rm -v pki-data:/pki crab-pki:latest status
+#   docker run --rm -v pki-data:/pki -e CRAB_SERVICES="db api worker" \
+#     crab-pki:latest revoke api
+#
+# Usage — Compose init container:
+#   See examples/docker-compose.pki.yml
+
+FROM crab:latest
+
+LABEL org.opencontainers.image.title="crab-pki" \
+      org.opencontainers.image.description="CRAB PKI init-container for Docker Compose" \
+      org.opencontainers.image.source="https://github.com/snafus/crab-certbundle" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+# Add the PKI management script and create the /pki volume directory.
+# The crab user (uid 999) is inherited from the base image; we briefly
+# switch to root only to install the script and fix ownership.
+USER root
+
+COPY scripts/compose-pki.sh /usr/local/bin/compose-pki.sh
+RUN chmod 0755 /usr/local/bin/compose-pki.sh \
+    && mkdir -p /pki \
+    && chown crab:crab /pki
+
+USER crab
+WORKDIR /pki
+
+# Declare the volume so Compose/Docker creates it with crab:crab ownership
+# when the container first runs.
+VOLUME ["/pki"]
+
+# All CRAB_* variables from compose-pki.sh — set defaults here so
+# they're visible in `docker inspect` and overridable in docker-compose.yaml.
+ENV CRAB_PKI_DIR=/pki \
+    CRAB_SERVICES="" \
+    CRAB_ROOT_CN="Compose Root CA" \
+    CRAB_ISSUING_CN="Compose Issuing CA" \
+    CRAB_ORG="Lab" \
+    CRAB_ROOT_DAYS=3650 \
+    CRAB_ISSUING_DAYS=1825 \
+    CRAB_CERT_DAYS=365 \
+    CRAB_KEY_TYPE=ecdsa-p256 \
+    CRAB_CERT_PROFILE=server \
+    CRAB_USE_INTERMEDIATE=true
+
+ENTRYPOINT ["/usr/local/bin/compose-pki.sh"]
+# Default: initialise the hierarchy.  Override with other subcommands:
+#   docker run ... crab-pki:latest status
+#   docker run ... crab-pki:latest revoke api
+CMD ["init"]

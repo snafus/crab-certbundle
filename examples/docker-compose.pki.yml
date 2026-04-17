@@ -1,0 +1,119 @@
+# docker-compose.pki.yml — PKI init-container overlay for Docker Compose
+#
+# This file is an override; use it together with your application's
+# docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f examples/docker-compose.pki.yml up
+#
+# Or add it to COMPOSE_FILE in your .env so it is always picked up:
+#
+#   COMPOSE_FILE=docker-compose.yml:examples/docker-compose.pki.yml
+#
+# What it adds:
+#   1. A `pki-init` service that generates the CA hierarchy and per-service
+#      certificates once, then exits cleanly (restart: "no").
+#   2. A `pki-data` named volume shared with every application service.
+#   3. `depends_on` / `condition: service_completed_successfully` on each
+#      service so Docker Compose waits for certs before starting apps.
+#
+# Customisation:
+#   All CRAB_* variables are documented in scripts/compose-pki.sh.
+#   The minimal ones to set are CRAB_SERVICES and (optionally) CRAB_ORG.
+#
+# Re-issuing a single cert (e.g. after rotation or compromise):
+#
+#   docker compose run --rm pki-init revoke api
+#   docker compose restart api
+#
+# Checking expiry:
+#
+#   docker compose run --rm pki-init status
+
+# ---------------------------------------------------------------------------
+# Volume shared between pki-init (write) and all application services (read)
+# ---------------------------------------------------------------------------
+volumes:
+  pki-data:
+
+# ---------------------------------------------------------------------------
+# PKI init service
+# ---------------------------------------------------------------------------
+services:
+  pki-init:
+    image: crab-pki:latest            # built with docker/Dockerfile.pki
+    # build:                          # uncomment to build locally instead
+    #   context: ..
+    #   dockerfile: docker/Dockerfile.pki
+    restart: "no"                     # run once then exit; never restart
+    volumes:
+      - pki-data:/pki
+    environment:
+      CRAB_PKI_DIR: /pki
+      # Space-separated list of Compose service names that need certs.
+      # Each name gets a DNS SAN matching that name so mutual TLS works
+      # across the Compose network.  Keep in sync with your services below.
+      CRAB_SERVICES: "db api worker"
+      CRAB_ORG: "My Project"
+      CRAB_ROOT_CN: "My Project Root CA"
+      CRAB_ISSUING_CN: "My Project Issuing CA"
+      CRAB_USE_INTERMEDIATE: "true"   # set to "false" to skip intermediate
+      CRAB_KEY_TYPE: "ecdsa-p256"
+      CRAB_CERT_DAYS: "365"
+      # Per-service extra SANs (optional).  Space-separated SAN values.
+      # The service name is always added automatically as DNS:<service>.
+      # CRAB_SAN_API: "DNS:api.internal IP:10.0.0.5"
+
+# ---------------------------------------------------------------------------
+# Application services
+#
+# Each service:
+#   • depends on pki-init completing successfully (condition below)
+#   • mounts pki-data read-only
+#   • receives its cert at a predictable path inside the volume
+#
+# Cert paths inside the volume (all read-only to application services):
+#   /pki/root-ca/ca-cert.pem              Trust anchor (configure in app)
+#   /pki/issuing-ca/issued/<svc>-cert.pem      Leaf certificate
+#   /pki/issuing-ca/issued/<svc>-key.pem       Private key (mode 0600)
+#   /pki/issuing-ca/issued/<svc>-fullchain.pem Leaf + intermediates (no root)
+#
+# If USE_INTERMEDIATE=false, replace issuing-ca with root-ca in all paths.
+# ---------------------------------------------------------------------------
+
+  db:
+    # image: postgres:16              # replace with your actual image
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+    volumes:
+      - pki-data:/run/pki:ro
+    environment:
+      # Example for PostgreSQL mutual TLS — adapt to your application.
+      PGSSLMODE: verify-full
+      PGSSLCERT: /run/pki/issuing-ca/issued/db-fullchain.pem
+      PGSSLKEY:  /run/pki/issuing-ca/issued/db-key.pem
+      PGSSLROOTCERT: /run/pki/root-ca/ca-cert.pem
+
+  api:
+    # image: my-api:latest
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+    volumes:
+      - pki-data:/run/pki:ro
+    environment:
+      TLS_CERT:   /run/pki/issuing-ca/issued/api-fullchain.pem
+      TLS_KEY:    /run/pki/issuing-ca/issued/api-key.pem
+      TLS_CA:     /run/pki/root-ca/ca-cert.pem
+
+  worker:
+    # image: my-worker:latest
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+    volumes:
+      - pki-data:/run/pki:ro
+    environment:
+      TLS_CERT:   /run/pki/issuing-ca/issued/worker-fullchain.pem
+      TLS_KEY:    /run/pki/issuing-ca/issued/worker-key.pem
+      TLS_CA:     /run/pki/root-ca/ca-cert.pem
