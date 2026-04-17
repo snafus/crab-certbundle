@@ -1225,9 +1225,14 @@ def cert_renew(ca_dir, cert_file, days, reuse_key, force):
         click.echo("ERROR: Cannot read certificate: {}".format(exc), err=True)
         sys.exit(1)
 
+    # cryptography < 42 returns a naive datetime; >= 42 returns timezone-aware
+    # UTC.  Normalise to naive so arithmetic works across all versions.
+    not_after = old_cert.not_valid_after
+    if not_after.tzinfo is not None:
+        not_after = not_after.replace(tzinfo=None)
     now = _datetime.utcnow()
-    days_remaining = (old_cert.not_valid_after - now).days
-    if old_cert.not_valid_after > now and not force:
+    days_remaining = (not_after - now).days
+    if not_after > now and not force:
         click.echo(
             "Certificate is still valid ({} day(s) remaining).".format(days_remaining)
         )

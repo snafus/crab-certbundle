@@ -1211,21 +1211,32 @@ def renew_cert(
     else:
         key = _generate_key(_key_type_from_public_key(old_cert.public_key()))
 
+    # Capture the old fingerprint NOW, before the cert file is overwritten.
+    old_fp  = _cert_fp(old_cert)
+
     ca_cert = ca.load_cert()
     ca_key  = ca.load_key()
-
-    # Revoke the old certificate first (reason: superseded).
-    # The old cert file is overwritten by _issue_cert_with_key below.
-    revoke_cert(ca_dir_path, cert_path, reason="superseded")
 
     logger.info(
         "Renewing cert cn=%r profile=%s days=%d reuse_key=%s",
         cn, profile, days, reuse_key,
     )
 
-    return _issue_cert_with_key(
+    # Issue first — if this fails the old cert is still valid and un-revoked.
+    result = _issue_cert_with_key(
         ca, ca_cert, ca_key, key, cn, sans, days, profile, cdp_url, out_dir
     )
+
+    # Issue succeeded: now mark the old serial revoked and rebuild the CRL.
+    # We cannot call revoke_cert() here because cert_path now contains the
+    # NEW certificate.  Inline the two operations using the fingerprint we
+    # captured above.
+    now_str = _format_dt(_utcnow_naive())
+    serial  = ca.serial_db.revoke(old_fp, now_str, "superseded")
+    logger.info("Revoked old cert serial=%d reason=superseded", serial)
+    generate_crl(ca_dir_path)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
