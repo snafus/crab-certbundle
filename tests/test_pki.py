@@ -19,6 +19,7 @@ from crab.pki import (
     SerialDB,
     generate_crl,
     init_ca,
+    init_intermediate_ca,
     issue_cert,
     list_issued,
     revoke_cert,
@@ -552,9 +553,20 @@ class TestGenerateCRL:
 class TestShowCAInfo:
     def test_returns_expected_keys(self, ca_dir):
         info = show_ca_info(ca_dir)
-        for key in ("subject", "fingerprint_sha256", "not_before", "not_after",
-                    "key_type", "issued_count", "revoked_count", "crl_exists"):
+        for key in ("subject", "issuer", "is_root", "fingerprint_sha256",
+                    "not_before", "not_after", "key_type", "path_length",
+                    "issued_count", "revoked_count", "crl_exists", "chain_exists"):
             assert key in info, "Missing key: {}".format(key)
+
+    def test_root_ca_is_root(self, ca_dir):
+        assert show_ca_info(ca_dir)["is_root"] is True
+
+    def test_root_ca_path_length_is_none(self, ca_dir):
+        """Root CAs are initialised without a pathLen constraint."""
+        assert show_ca_info(ca_dir)["path_length"] is None
+
+    def test_root_ca_chain_does_not_exist(self, ca_dir):
+        assert show_ca_info(ca_dir)["chain_exists"] is False
 
     def test_issued_count_zero_initially(self, ca_dir):
         assert show_ca_info(ca_dir)["issued_count"] == 0
@@ -658,6 +670,251 @@ class TestSerialDB:
         db.append({"serial": 1, "fingerprint_sha256": "AA", "revoked": True})
         with pytest.raises(PKIError, match="already revoked"):
             db.revoke("AA", "2026-01-01T00:00:00Z")
+
+
+# ---------------------------------------------------------------------------
+# Intermediate CA
+# ---------------------------------------------------------------------------
+
+class TestIntermediateCA:
+    """Tests for init_intermediate_ca."""
+
+    def test_creates_directory_structure(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA")
+        assert os.path.isfile(os.path.join(sub, "ca-cert.pem"))
+        assert os.path.isfile(os.path.join(sub, "ca-key.pem"))
+        assert os.path.isfile(os.path.join(sub, "ca-chain.pem"))
+
+    def test_ca_cert_is_signed_by_parent(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA")
+        root_cert = _load_cert(os.path.join(root, "ca-cert.pem"))
+        sub_cert  = _load_cert(os.path.join(sub,  "ca-cert.pem"))
+        # Issuer of sub should equal subject of root
+        assert sub_cert.issuer == root_cert.subject
+
+    def test_basic_constraints_ca_true(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA")
+        cert = _load_cert(os.path.join(sub, "ca-cert.pem"))
+        bc = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        assert bc.ca is True
+
+    def test_path_length_default_zero(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA")
+        cert = _load_cert(os.path.join(sub, "ca-cert.pem"))
+        bc = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        assert bc.path_length == 0
+
+    def test_path_length_none_when_unconstrained(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA", path_length=None)
+        cert = _load_cert(os.path.join(sub, "ca-cert.pem"))
+        bc = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        assert bc.path_length is None
+
+    def test_path_length_custom(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA", path_length=1)
+        cert = _load_cert(os.path.join(sub, "ca-cert.pem"))
+        bc = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        assert bc.path_length == 1
+
+    def test_chain_file_contains_both_certs(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA")
+        with open(os.path.join(sub, "ca-chain.pem"), "rb") as fh:
+            chain_pem = fh.read()
+        # Should contain both PEM blocks
+        assert chain_pem.count(b"-----BEGIN CERTIFICATE-----") == 2
+        # First cert in chain is the intermediate
+        certs = [x509.load_pem_x509_certificate(b"-----BEGIN CERTIFICATE-----" + p)
+                 for p in chain_pem.split(b"-----BEGIN CERTIFICATE-----")[1:]]
+        assert len(certs) == 2
+        assert certs[0].subject.rfc4514_string() == "CN=Sub CA"
+        assert certs[1].subject.rfc4514_string() == "CN=Root CA"
+
+    def test_chain_file_three_levels(self, tmp_path):
+        """Three-level chain: root → intermediate → leaf-ca; chain has 3 certs."""
+        root = str(tmp_path / "root")
+        mid  = str(tmp_path / "mid")
+        leaf = str(tmp_path / "leaf")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(mid, root, cn="Mid CA", path_length=1)
+        init_intermediate_ca(leaf, mid, cn="Leaf CA", path_length=0)
+        with open(os.path.join(leaf, "ca-chain.pem"), "rb") as fh:
+            chain_pem = fh.read()
+        assert chain_pem.count(b"-----BEGIN CERTIFICATE-----") == 3
+
+    def test_issuance_recorded_in_parent_db(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA")
+        records = list_issued(root)
+        assert len(records) == 1
+        assert records[0]["cn"] == "Sub CA"
+        assert records[0]["profile"] == "intermediate-ca"
+
+    def test_intermediate_can_issue_end_entity_certs(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        out  = str(tmp_path / "certs")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA")
+        cert_path, _ = issue_cert(sub, cn="host.example.com", out_dir=out)
+        cert = _load_cert(cert_path)
+        sub_cert = _load_cert(os.path.join(sub, "ca-cert.pem"))
+        assert cert.issuer == sub_cert.subject
+
+    def test_show_ca_info_intermediate(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA")
+        info = show_ca_info(sub)
+        assert info["is_root"] is False
+        assert info["path_length"] == 0
+        assert info["chain_exists"] is True
+        assert "Root CA" in info["issuer"]
+
+    def test_raises_if_parent_not_found(self, tmp_path):
+        with pytest.raises(PKIError, match="No CA found"):
+            init_intermediate_ca(
+                str(tmp_path / "sub"),
+                str(tmp_path / "nonexistent-parent"),
+                cn="Sub CA",
+            )
+
+    def test_raises_if_already_exists_without_force(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA")
+        with pytest.raises(PKIError, match="already exists"):
+            init_intermediate_ca(sub, root, cn="Sub CA 2")
+
+    def test_force_overwrites_existing(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA v1")
+        init_intermediate_ca(sub, root, cn="Sub CA v2", force=True)
+        cert = _load_cert(os.path.join(sub, "ca-cert.pem"))
+        assert "v2" in cert.subject.rfc4514_string()
+
+    def test_parent_path_len_zero_raises(self, tmp_path):
+        """A parent with pathLen=0 must refuse to sign a CA cert."""
+        root = str(tmp_path / "root")
+        mid  = str(tmp_path / "mid")
+        leaf = str(tmp_path / "leaf")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(mid, root, cn="Mid CA", path_length=0)
+        with pytest.raises(PKIError, match="pathLen=0"):
+            init_intermediate_ca(leaf, mid, cn="Leaf CA")
+
+    def test_key_type_ed25519(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA", key_type="ed25519")
+        info = show_ca_info(sub)
+        assert info["key_type"] == "Ed25519"
+
+    def test_cdp_url_embedded(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA")
+        init_intermediate_ca(sub, root, cn="Sub CA",
+                             cdp_url="http://crl.example.com/root.crl")
+        cert = _load_cert(os.path.join(sub, "ca-cert.pem"))
+        cdps = cert.extensions.get_extension_for_class(
+            x509.CRLDistributionPoints
+        ).value
+        urls = [
+            p.full_name[0].value
+            for p in cdps
+            if p.full_name
+        ]
+        assert "http://crl.example.com/root.crl" in urls
+
+
+class TestIntermediateCACLI:
+    """CLI integration tests for crabctl ca intermediate."""
+
+    def test_creates_intermediate_ca(self, runner, tmp_path):
+        from crab.cli import main
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        runner.invoke(main, ["-q", "ca", "init", root, "--name", "Root CA"],
+                      catch_exceptions=False)
+        result = runner.invoke(
+            main,
+            ["-q", "ca", "intermediate", sub,
+             "--parent", root, "--name", "Sub CA"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert os.path.isfile(os.path.join(sub, "ca-cert.pem"))
+        assert os.path.isfile(os.path.join(sub, "ca-chain.pem"))
+
+    def test_ca_show_indicates_intermediate(self, runner, tmp_path):
+        from crab.cli import main
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        runner.invoke(main, ["-q", "ca", "init", root, "--name", "Root CA"],
+                      catch_exceptions=False)
+        runner.invoke(main,
+                      ["-q", "ca", "intermediate", sub,
+                       "--parent", root, "--name", "Sub CA"],
+                      catch_exceptions=False)
+        result = runner.invoke(main, ["-q", "ca", "show", sub],
+                               catch_exceptions=False)
+        assert "intermediate" in result.output
+        assert "Chain file" in result.output
+
+    def test_path_length_negative_means_unconstrained(self, runner, tmp_path):
+        from crab.cli import main
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        runner.invoke(main, ["-q", "ca", "init", root, "--name", "Root CA"],
+                      catch_exceptions=False)
+        result = runner.invoke(
+            main,
+            ["-q", "ca", "intermediate", sub,
+             "--parent", root, "--name", "Policy CA",
+             "--path-length", "-1"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        cert = _load_cert(os.path.join(sub, "ca-cert.pem"))
+        bc = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        assert bc.path_length is None
+
+    def test_error_on_missing_parent(self, runner, tmp_path):
+        from crab.cli import main
+        result = runner.invoke(
+            main,
+            ["-q", "ca", "intermediate", str(tmp_path / "sub"),
+             "--parent", str(tmp_path / "noparent"), "--name", "Sub CA"],
+        )
+        assert result.exit_code != 0
 
 
 # ---------------------------------------------------------------------------

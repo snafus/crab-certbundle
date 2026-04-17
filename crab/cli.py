@@ -36,7 +36,7 @@ from crab.crl import CRLManager
 from crab.output import OutputProfile, build_output
 from crab.policy import PolicyEngine
 from crab.pki import (
-    init_ca, issue_cert, revoke_cert, generate_crl,
+    init_ca, init_intermediate_ca, issue_cert, revoke_cert, generate_crl,
     show_ca_info, list_issued,
     CERT_PROFILES, KEY_TYPES, REVOKE_REASONS,
     PKIError, CADirectory,
@@ -912,7 +912,14 @@ def ca_show(ctx, ca_dir):
         return
 
     click.echo("CA directory  : {}".format(info["ca_dir"]))
+    click.echo("Type          : {}".format("root" if info["is_root"] else "intermediate"))
     click.echo("Subject       : {}".format(info["subject"]))
+    if not info["is_root"]:
+        click.echo("Issuer        : {}".format(info["issuer"]))
+    path_len = info["path_length"]
+    click.echo("Path length   : {}".format(
+        "unconstrained" if path_len is None else str(path_len)
+    ))
     click.echo("Key type      : {}".format(info["key_type"]))
     click.echo("Valid from    : {}".format(info["not_before"]))
     click.echo("Valid until   : {}".format(info["not_after"]))
@@ -921,6 +928,83 @@ def ca_show(ctx, ca_dir):
         info["issued_count"], info["revoked_count"]
     ))
     click.echo("CRL present   : {}".format("yes" if info["crl_exists"] else "no"))
+    if not info["is_root"]:
+        click.echo("Chain file    : {}".format("yes" if info["chain_exists"] else "no"))
+
+
+@ca_group.command("intermediate")
+@click.argument("ca_dir", default="./sub-ca", metavar="[CA_DIR]")
+@click.option("--parent", "parent_dir", required=True, metavar="PARENT_CA_DIR",
+              help="Path to the parent CA directory.")
+@click.option("--name", default="CRAB Intermediate CA", show_default=True,
+              help="Common Name for the intermediate CA.")
+@click.option("--org", default=None, help="Organisation name.")
+@click.option("--days", default=1825, show_default=True, type=int,
+              help="Validity period in days.")
+@click.option("--key-type", default="rsa2048", show_default=True,
+              type=click.Choice(KEY_TYPES),
+              help="Key algorithm.")
+@click.option("--path-length", default=0, show_default=True, type=int,
+              help="BasicConstraints pathLenConstraint. "
+                   "0 = can only sign end-entity certs; -1 = unconstrained.")
+@click.option("--cdp-url", default=None, metavar="URL",
+              help="CRL Distribution Point URL to embed in the CA certificate.")
+@click.option("--force", is_flag=True, help="Overwrite an existing CA.")
+def ca_intermediate(ca_dir, parent_dir, name, org, days, key_type, path_length,
+                    cdp_url, force):
+    """
+    Create an intermediate CA signed by an existing parent CA.
+
+    The new CA directory has the same layout as a root CA and can issue
+    certificates with 'crabctl cert issue'.  A ca-chain.pem file is also
+    written containing this CA's cert concatenated with the parent chain,
+    suitable for use as the certificate chain in TLS configurations.
+
+    The issuance is recorded in the parent CA's serial database.
+
+    \b
+    Examples:
+        # Two-level hierarchy: root → intermediate → end-entity
+        crabctl ca init ./root-ca --name "My Root CA"
+        crabctl ca intermediate ./sub-ca --parent ./root-ca --name "My Sub CA"
+        crabctl cert issue --ca ./sub-ca --cn host.example.com
+
+        # Unconstrained intermediate (can sign further CAs)
+        crabctl ca intermediate ./policy-ca --parent ./root-ca \\
+            --name "Policy CA" --path-length -1
+    """
+    # -1 is our sentinel for "unconstrained" since Click can't represent None
+    effective_path_length = None if path_length < 0 else path_length
+
+    try:
+        cert_path, key_path = init_intermediate_ca(
+            ca_dir,
+            parent_dir,
+            cn=name,
+            org=org,
+            days=days,
+            key_type=key_type,
+            path_length=effective_path_length,
+            force=force,
+            cdp_url=cdp_url,
+        )
+    except PKIError as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+
+    click.echo("Intermediate CA created:")
+    click.echo("  Directory   : {}".format(os.path.abspath(ca_dir)))
+    click.echo("  Certificate : {}".format(cert_path))
+    click.echo("  Private key : {}  (mode 0600)".format(key_path))
+    click.echo("  Chain file  : {}".format(
+        os.path.join(os.path.abspath(ca_dir), "ca-chain.pem")
+    ))
+    click.echo("  CN          : {}".format(name))
+    click.echo("  Path length : {}".format(
+        "unconstrained" if effective_path_length is None
+        else str(effective_path_length)
+    ))
+    click.echo("  Valid for   : {} days".format(days))
 
 
 # ---------------------------------------------------------------------------

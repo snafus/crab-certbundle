@@ -19,12 +19,13 @@ CA directory layout
 
 Public API
 ----------
-init_ca        Create a new self-signed root CA.
-issue_cert     Issue a certificate signed by a CA.
-revoke_cert    Revoke a certificate and regenerate the CRL.
-generate_crl   Regenerate the CRL from the serial database.
-show_ca_info   Return a dict of CA details.
-list_issued    Return all serial-database records.
+init_ca                Create a new self-signed root CA.
+init_intermediate_ca   Create an intermediate CA signed by an existing CA.
+issue_cert             Issue a certificate signed by a CA.
+revoke_cert            Revoke a certificate and regenerate the CRL.
+generate_crl           Regenerate the CRL from the serial database.
+show_ca_info           Return a dict of CA details.
+list_issued            Return all serial-database records.
 """
 
 import fcntl
@@ -72,6 +73,7 @@ _REASON_FLAGS = {
 # Internal directory/file names
 _CA_CERT_FILE  = "ca-cert.pem"
 _CA_KEY_FILE   = "ca-key.pem"
+_CHAIN_FILE    = "ca-chain.pem"   # intermediate cert + all parent certs
 _SERIAL_DB_FILE = "serial.db"
 _CRL_FILE      = "crl.pem"
 _ISSUED_DIR    = "issued"
@@ -344,11 +346,12 @@ class CADirectory:
     def __init__(self, path):
         # type: (str) -> None
         self.path = os.path.abspath(path)
-        self.ca_cert_path = os.path.join(self.path, _CA_CERT_FILE)
-        self.ca_key_path  = os.path.join(self.path, _CA_KEY_FILE)
-        self.crl_path     = os.path.join(self.path, _CRL_FILE)
-        self.issued_dir   = os.path.join(self.path, _ISSUED_DIR)
-        self.serial_db    = SerialDB(os.path.join(self.path, _SERIAL_DB_FILE))
+        self.ca_cert_path  = os.path.join(self.path, _CA_CERT_FILE)
+        self.ca_key_path   = os.path.join(self.path, _CA_KEY_FILE)
+        self.chain_path    = os.path.join(self.path, _CHAIN_FILE)
+        self.crl_path      = os.path.join(self.path, _CRL_FILE)
+        self.issued_dir    = os.path.join(self.path, _ISSUED_DIR)
+        self.serial_db     = SerialDB(os.path.join(self.path, _SERIAL_DB_FILE))
 
     def exists(self):
         # type: () -> bool
@@ -468,6 +471,205 @@ def init_ca(
     logger.info(
         "CA initialised: %s  key=%s  valid until %s",
         subject.rfc4514_string(), key_type, _format_date(not_after),
+    )
+    return ca.ca_cert_path, ca.ca_key_path
+
+
+# ---------------------------------------------------------------------------
+# Intermediate CA initialisation
+# ---------------------------------------------------------------------------
+
+def init_intermediate_ca(
+    out_dir,                # type: str
+    parent_ca_dir,          # type: str
+    cn,                     # type: str
+    org=None,               # type: Optional[str]
+    days=1825,              # type: int
+    key_type="rsa2048",     # type: str
+    path_length=0,          # type: Optional[int]
+    force=False,            # type: bool
+    cdp_url=None,           # type: Optional[str]
+):
+    # type: (...) -> Tuple[str, str]
+    """
+    Create an intermediate CA signed by an existing CA.
+
+    The new CA directory has the same layout as a root CA (ca-cert.pem,
+    ca-key.pem, serial.db, …) and can issue certificates with
+    :func:`issue_cert`.  It additionally contains ``ca-chain.pem`` — the
+    concatenation of this CA's certificate and all ancestor certificates up
+    to the root — which is required by relying parties to build the full
+    chain.
+
+    The issuance is recorded in the parent CA's serial database.
+
+    Parameters
+    ----------
+    out_dir:       Directory to create for the intermediate CA.
+    parent_ca_dir: Path to an existing CA directory (root or intermediate).
+    cn:            Common Name of the intermediate CA.
+    org:           Optional Organisation name.
+    days:          Validity period in days (default 1825 ≈ 5 years).
+    key_type:      Key algorithm (same choices as :func:`init_ca`).
+    path_length:   ``BasicConstraints`` pathLenConstraint.  0 means this CA
+                   can only sign end-entity certs; None means unconstrained.
+                   Default 0 (typical single-level hierarchy).
+    force:         Overwrite existing CA without raising.
+    cdp_url:       CRL Distribution Point URL to embed in the issued cert.
+
+    Returns
+    -------
+    (ca_cert_path, ca_key_path)
+
+    Raises
+    ------
+    PKIError  if the parent CA is not found, the directory already exists and
+              *force* is False, or on I/O errors.
+    """
+    out_dir = os.path.abspath(out_dir)
+    parent  = CADirectory(parent_ca_dir)
+    if not parent.exists():
+        raise PKIError(
+            "No CA found in '{}'. Run 'crabctl ca init' first.".format(parent_ca_dir)
+        )
+
+    ca = CADirectory(out_dir)
+    if ca.exists() and not force:
+        raise PKIError(
+            "A CA already exists in '{}'. "
+            "Use --force to overwrite.".format(out_dir)
+        )
+
+    os.makedirs(out_dir, mode=0o755, exist_ok=True)
+    os.makedirs(ca.issued_dir, mode=0o755, exist_ok=True)
+
+    parent_cert = parent.load_cert()
+    parent_key  = parent.load_key()
+
+    # Validate that the parent's BasicConstraints permit issuing CA certs.
+    try:
+        parent_bc = parent_cert.extensions.get_extension_for_class(
+            x509.BasicConstraints
+        ).value
+        if not parent_bc.ca:
+            raise PKIError(
+                "Parent certificate is not a CA (BasicConstraints CA=FALSE)."
+            )
+        if parent_bc.path_length is not None and parent_bc.path_length == 0:
+            raise PKIError(
+                "Parent CA has pathLen=0 and cannot sign further CA certificates."
+            )
+    except x509.ExtensionNotFound:
+        raise PKIError(
+            "Parent certificate has no BasicConstraints extension."
+        )
+
+    key = _generate_key(key_type)
+    pub = key.public_key()
+
+    attrs = []
+    if org:
+        attrs.append(x509.NameAttribute(NameOID.ORGANIZATION_NAME, org))
+    attrs.append(x509.NameAttribute(NameOID.COMMON_NAME, cn))
+    subject = x509.Name(attrs)
+
+    now      = _utcnow_naive()
+    not_after = now + timedelta(days=days)
+    serial   = parent.serial_db.next_serial()
+
+    parent_ski = parent_cert.extensions.get_extension_for_class(
+        x509.SubjectKeyIdentifier
+    ).value
+
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(parent_cert.subject)
+        .public_key(pub)
+        .serial_number(serial)
+        .not_valid_before(now)
+        .not_valid_after(not_after)
+        .add_extension(
+            x509.BasicConstraints(ca=True, path_length=path_length),
+            critical=True,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(pub),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(parent_ski),
+            critical=False,
+        )
+    )
+
+    if cdp_url:
+        builder = builder.add_extension(
+            x509.CRLDistributionPoints([
+                x509.DistributionPoint(
+                    full_name=[x509.UniformResourceIdentifier(cdp_url)],
+                    relative_name=None,
+                    reasons=None,
+                    crl_issuer=None,
+                )
+            ]),
+            critical=False,
+        )
+
+    cert = builder.sign(parent_key, _sign_hash(parent_key))
+    fp   = _cert_fp(cert)
+
+    # Write the intermediate CA's own certificate and key.
+    _write_atomic(ca.ca_key_path,  _key_pem(key), mode=0o600)
+    _write_atomic(ca.ca_cert_path, cert.public_bytes(serialization.Encoding.PEM))
+
+    # Write ca-chain.pem: this cert followed by any chain from the parent.
+    # If the parent itself has a chain file, include that; otherwise just
+    # append the parent's own CA cert.
+    chain_pem = cert.public_bytes(serialization.Encoding.PEM)
+    if os.path.isfile(parent.chain_path):
+        with open(parent.chain_path, "rb") as fh:
+            chain_pem += fh.read()
+    else:
+        chain_pem += parent_cert.public_bytes(serialization.Encoding.PEM)
+    _write_atomic(ca.chain_path, chain_pem)
+
+    # Record in the parent CA's serial database.
+    parent.serial_db.append({
+        "serial":             serial,
+        "cn":                 cn,
+        "subject":            cert.subject.rfc4514_string(),
+        "fingerprint_sha256": fp,
+        "profile":            "intermediate-ca",
+        "issued_at":          _format_dt(now),
+        "expires_at":         _format_dt(not_after),
+        "cert_file":          os.path.abspath(ca.ca_cert_path),
+        "revoked":            False,
+        "revoked_at":         None,
+        "revoke_reason":      None,
+    })
+
+    logger.info(
+        "Intermediate CA initialised: %s  parent=%s  key=%s  pathLen=%s  valid until %s",
+        subject.rfc4514_string(),
+        parent_cert.subject.rfc4514_string(),
+        key_type,
+        str(path_length) if path_length is not None else "unconstrained",
+        _format_date(not_after),
     )
     return ca.ca_cert_path, ca.ca_key_path
 
@@ -825,9 +1027,10 @@ def show_ca_info(ca_dir_path):
     """
     Return a dict describing the CA in *ca_dir_path*.
 
-    Keys: ``ca_dir``, ``subject``, ``serial``, ``not_before``,
-    ``not_after``, ``fingerprint_sha256``, ``key_type``,
-    ``issued_count``, ``revoked_count``.
+    Keys: ``ca_dir``, ``subject``, ``issuer``, ``is_root``, ``serial``,
+    ``not_before``, ``not_after``, ``fingerprint_sha256``, ``key_type``,
+    ``path_length``, ``issued_count``, ``revoked_count``, ``crl_exists``,
+    ``chain_exists``.
     """
     ca = CADirectory(ca_dir_path)
     if not ca.exists():
@@ -836,17 +1039,30 @@ def show_ca_info(ca_dir_path):
     cert    = ca.load_cert()
     records = ca.serial_db.records()
 
+    # BasicConstraints path_length (None = unconstrained)
+    try:
+        bc = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        path_length = bc.path_length   # int or None
+    except x509.ExtensionNotFound:
+        path_length = None
+
+    is_root = cert.subject == cert.issuer
+
     return {
         "ca_dir":             ca.path,
         "subject":            cert.subject.rfc4514_string(),
+        "issuer":             cert.issuer.rfc4514_string(),
+        "is_root":            is_root,
         "serial":             str(cert.serial_number),
         "not_before":         _format_date(cert.not_valid_before),
         "not_after":          _format_date(cert.not_valid_after),
         "fingerprint_sha256": _cert_fp(cert),
         "key_type":           _key_type_label(cert.public_key()),
+        "path_length":        path_length,
         "issued_count":       len(records),
         "revoked_count":      sum(1 for r in records if r.get("revoked")),
         "crl_exists":         os.path.isfile(ca.crl_path),
+        "chain_exists":       os.path.isfile(ca.chain_path),
     }
 
 
