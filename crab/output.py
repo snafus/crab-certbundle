@@ -63,10 +63,12 @@ class OutputProfile:
     def __init__(self, name, profile_config):
         # type: (str, dict) -> None
         self.name = name
-        self.output_path = profile_config["output_path"]
-        self.staging_path = profile_config.get(
+        # Normalise away trailing slashes so that derived paths (staging,
+        # backup) are siblings of output_path rather than children of it.
+        self.output_path = os.path.normpath(profile_config["output_path"])
+        self.staging_path = os.path.normpath(profile_config.get(
             "staging_path", self.output_path + ".staging"
-        )
+        ))
         self.atomic = bool(profile_config.get("atomic", True))
         output_format = profile_config.get("output_format", "capath")
         if output_format not in ("capath", "bundle", "pkcs12"):
