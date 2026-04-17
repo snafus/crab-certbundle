@@ -23,18 +23,19 @@ directory that can be used directly by any software reading
 - Atomic directory replacement — output is staged and renamed; consumers
   never see a partially-written directory
 - Idempotent rebuilds — running twice produces the same output
-- Policy engine — include/exclude by subject regex, fingerprint, source, IGTF
-  policy tag, EKU; reject expired or non-CA certificates
+- Policy engine — include/exclude/warn by subject regex, fingerprint, source,
+  IGTF policy tag, EKU; reject expired or non-CA certificates
 - Subject-hash computation via pyOpenSSL → subprocess openssl → Python fallback
 - IGTF `.info` / `.signing_policy` / `.namespaces` file passthrough
-- CRL fetch, store, and freshness validation
+- CRL fetch, store, and freshness validation with tunable staleness thresholds
 - Diff mode — show what would change before committing a rebuild
 - Dry-run mode
-- JSON output for all list/diff/validate commands
+- `--output-format json` global flag for machine-readable output on all commands
+- `--log-format json` global flag for structured log forwarding
 - Python 3.6.8+ compatible (Rocky 8 / EL8, Rocky 9 / EL9)
 - No dependency on OSG, VOMS, or grid middleware packages
-- **Built-in test CA** — `crabctl ca` / `crabctl cert` for generating
-  self-signed CAs and host certificates for lab and CI environments
+- **Built-in test CA** — `crabctl ca` / `crabctl cert` for generating root and
+  intermediate CAs and host certificates for lab and CI environments
 
 ---
 
@@ -134,7 +135,7 @@ crabctl --config /etc/crab/config.yaml validate
 ## CLI reference
 
 ```
-crabctl [--config FILE] [--verbose] [--quiet] [--log-format text|json] COMMAND [ARGS]
+crabctl [--config FILE] [--verbose] [--quiet] [--output-format text|json] [--log-format text|json] COMMAND [ARGS]
 
 Commands:
   build         Build one or more output profiles.
@@ -145,6 +146,16 @@ Commands:
   fetch-crls    Fetch or refresh CRLs for a profile.
   status        Report cert counts, expiry, and CRL freshness without network I/O.
   show-config   Dump the resolved configuration.
+  ca            CA management sub-commands (init, intermediate, show).
+  cert          Certificate sub-commands (issue, revoke, list).
+```
+
+`--output-format json` switches all command output to machine-readable JSON.
+This is a **global** flag and must appear before the subcommand name:
+
+```bash
+crabctl --output-format json validate grid
+crabctl --output-format json status
 ```
 
 `--log-format json` emits one JSON object per log line with fields
@@ -189,7 +200,7 @@ crabctl validate grid
 crabctl validate /etc/grid-security/certificates
 
 # Output JSON
-crabctl validate --json grid
+crabctl --output-format json validate grid
 ```
 
 ### diff
@@ -202,7 +213,7 @@ crabctl diff grid
 crabctl diff /etc/grid-security/certificates --old-dir /backup/certs
 
 # JSON output
-crabctl diff --json grid
+crabctl --output-format json diff grid
 ```
 
 ### list
@@ -221,7 +232,7 @@ crabctl list /etc/grid-security/certificates
 crabctl list --expired grid
 
 # JSON
-crabctl list --json grid | jq '.[].subject'
+crabctl --output-format json list grid | jq '.[].subject'
 ```
 
 ### fetch-crls
@@ -260,7 +271,7 @@ and dashboards.
 crabctl status
 
 # Machine-readable JSON output
-crabctl status --json
+crabctl --output-format json status
 ```
 
 Exit codes: 0 = all profiles healthy, 1 = any profile degraded or missing.
@@ -324,7 +335,31 @@ profiles:
       require_ca_flag: true
       exclude:
         - subject_regex: "CN=Some Deprecated CA.*"
+      warn:
+        - subject_regex: "CN=ACME Lab.*"   # pass through but flag WARN
+        - fingerprint: "AA:BB:CC:…"        # warn by fingerprint
 ```
+
+**Policy evaluation order**: non-CA check → expired check → explicit
+`include` list → explicit `exclude` list → `warn` list → default INCLUDE.
+A certificate matching `warn` is included in the output but counts toward
+`--strict-warnings` exit code 3.
+
+**CRL cache-control** keys (under a profile or global `crl_config`):
+
+```yaml
+crl_config:
+  cache_dir: /var/cache/crab/crls
+  max_age_hours: 168        # warn if nextUpdate is more than this far in the past
+  min_remaining_hours: 4    # warn if fewer than N hours remain until nextUpdate
+  refetch_before_expiry_hours: 0  # skip re-fetch if CRL still has > N hours left
+                                  # (0 = always refetch; set to e.g. 12 for weekly CAs)
+```
+
+`min_remaining_hours` fires a warning without failing the build; useful
+for catching CAs that publish 24-hour CRLs but are slow to update.
+`refetch_before_expiry_hours` reduces network traffic for CAs that publish
+CRLs valid for many days (e.g. IGTF Tier-1 CAs publish weekly CRLs).
 
 ---
 
@@ -344,55 +379,78 @@ situation where you need a working PKI in minutes rather than days.
 
 ```bash
 # 1. Create a self-signed root CA
-crabctl ca init ./my-ca --name "Lab Test CA" --org "ACME Lab"
+crabctl ca init ./my-ca --name "Lab Root CA" --org "ACME Lab"
 
-# 2. Issue a server certificate (CN auto-added as DNS SAN)
+# 2. (Optional) Create an intermediate CA signed by the root
+crabctl ca intermediate ./my-ca/issuing \
+    --parent ./my-ca \
+    --name "Lab Issuing CA" --org "ACME Lab"
+
+# 3. Issue a server certificate (CN auto-added as DNS SAN)
+#    Use --ca ./my-ca/issuing when you have an intermediate CA
 crabctl cert issue --ca ./my-ca --cn host.example.com
 
-# 3. Issue a wildcard certificate
+# 4. Issue a wildcard certificate
 crabctl cert issue --ca ./my-ca --cn "*.example.com" \
     --san DNS:example.com
 
-# 4. Issue with extra SANs including an IP address
+# 5. Issue with extra SANs including an IP address
 crabctl cert issue --ca ./my-ca --cn host.example.com \
     --san DNS:host.internal --san IP:10.0.0.1 --days 90
 
-# 5. Issue a grid-host cert (serverAuth + clientAuth EKU)
+# 6. Issue a grid-host cert (serverAuth + clientAuth EKU)
 crabctl cert issue --ca ./my-ca --cn xrootd.example.com \
     --profile grid-host
 
-# 6. Issue a client cert
+# 7. Issue a client cert
 crabctl cert issue --ca ./my-ca --cn alice \
     --profile client --san EMAIL:alice@example.com
 
-# 7. Show CA details
+# 8. Show CA details
 crabctl ca show ./my-ca
-crabctl ca show ./my-ca --json
+crabctl --output-format json ca show ./my-ca
 
-# 8. List issued certificates
+# 9. List issued certificates
 crabctl cert list --ca ./my-ca
 
-# 9. Revoke a certificate (regenerates CRL automatically)
+# 10. Revoke a certificate (regenerates CRL automatically)
 crabctl cert revoke --ca ./my-ca \
     ./my-ca/issued/host.example.com-cert.pem \
     --reason keyCompromise
 
-# 10. Show only revoked certificates
+# 11. Show only revoked certificates
 crabctl cert list --ca ./my-ca --revoked
 ```
 
 ### CA directory layout
 
 ```
-my-ca/
-  ca-cert.pem     Self-signed root CA certificate (mode 0644)
-  ca-key.pem      CA private key                  (mode 0600)
+my-ca/                          ← root CA
+  ca-cert.pem     Self-signed root certificate       (mode 0644)
+  ca-key.pem      CA private key                     (mode 0600)
   serial.db       Issued certificate log (JSON-lines)
   crl.pem         Current CRL (written after first revocation)
   issued/
+    my-ca-issuing-cert.pem      (the intermediate, recorded here)
+
+my-ca/issuing/                  ← intermediate CA (if created)
+  ca-cert.pem     Intermediate CA certificate        (mode 0644)
+  ca-key.pem      Intermediate CA private key        (mode 0600)
+  ca-chain.pem    This cert + full parent chain (excludes root)
+  serial.db       Issued certificate log
+  crl.pem         CRL for this intermediate
+  issued/
     host.example.com-cert.pem
-    host.example.com-key.pem   (mode 0600)
+    host.example.com-key.pem        (mode 0600)
+    host.example.com-fullchain.pem  (leaf + intermediates, no root)
 ```
+
+`ca-chain.pem` is present on intermediate CAs only. When a certificate is
+issued from an intermediate CA, a `{cn}-fullchain.pem` file is written
+alongside the leaf certificate. It contains the leaf plus all intermediate
+certificates, but **not** the root (following the TLS convention used by
+Let's Encrypt and most public CAs). Configure your TLS server to serve this
+file; clients should already trust the root independently.
 
 ### `crabctl ca init`
 
@@ -412,14 +470,42 @@ Options:
                     as a local source in the named profile
 ```
 
+### `crabctl ca intermediate`
+
+```
+crabctl ca intermediate [CA_DIR] [OPTIONS]
+
+  CA_DIR      Directory to create for the new intermediate CA (default: ./ca)
+
+Options:
+  --parent PATH     Parent CA directory to sign with  [required]
+  --name TEXT       Common Name for the intermediate CA  [default: CRAB Intermediate CA]
+  --org TEXT        Organisation name
+  --days INTEGER    Validity period in days  [default: 1825]
+  --key-type TEXT   rsa2048 | rsa4096 | ecdsa-p256 | ecdsa-p384 | ed25519
+                    [default: rsa2048]
+  --path-length N   Maximum CA depth below this intermediate (-1 = unconstrained)
+                    [default: 0 — this CA may only issue leaf certs]
+  --cdp-url URL     CRL Distribution Point URL to embed in issued certs
+  --force           Overwrite an existing intermediate CA directory
+```
+
+The new intermediate's certificate is signed by the parent CA and recorded in
+the parent's `serial.db`. A `ca-chain.pem` is written to the new directory
+containing this CA's certificate followed by any ancestor intermediates
+(the root is excluded, as it must be trusted independently).
+
 ### `crabctl ca show`
 
 ```
-crabctl ca show [CA_DIR] [--json]
+crabctl ca show [CA_DIR]
 ```
 
-Displays subject, key type, validity dates, fingerprint, issued/revoked
-counts, and whether a CRL is present.
+Displays subject, type (root or intermediate), issuer (for intermediates),
+key type, path length constraint, validity dates, fingerprint, issued/revoked
+counts, whether a CRL is present, and whether a chain file exists.
+
+Use `crabctl --output-format json ca show CA_DIR` for machine-readable output.
 
 ### `crabctl cert issue`
 
@@ -437,6 +523,11 @@ crabctl cert issue --ca CA_DIR [OPTIONS]
   --out DIR        Output directory  [default: <ca-dir>/issued/]
   --cdp-url URL    CRL Distribution Point URL to embed in the cert
 ```
+
+When issuing from an intermediate CA (one that has a `ca-chain.pem`), a
+`{cn}-fullchain.pem` file is written alongside the leaf. It contains the
+leaf certificate followed by any intermediate certificates, with the root
+excluded. Use this file as the TLS certificate chain served by your daemon.
 
 **Profile summary:**
 
@@ -499,11 +590,15 @@ is written to `<ca-dir>/crl.pem`.
 ### `crabctl cert list`
 
 ```
-crabctl cert list --ca CA_DIR [--json] [--revoked]
+crabctl cert list --ca CA_DIR [--revoked]
 ```
 
 Lists all certificates in the serial database. `--revoked` filters to
-revoked certs only. `--json` emits the raw serial-database records.
+revoked certs only. For machine-readable output use the global flag:
+
+```bash
+crabctl --output-format json cert list --ca ./my-ca
+```
 
 ### Adding your test CA to a crab profile
 
