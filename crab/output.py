@@ -476,6 +476,12 @@ def _atomic_swap(staging_dir, output_dir):
          window between the two renames where output_dir does not exist.
          Acceptable for all known research-infrastructure consumers.
     """
+    # Normalise away trailing slashes so path arithmetic works correctly.
+    # e.g. "/tmp/out/" + ".bak" → "/tmp/out/.bak" (wrong);
+    #      normpath strips the slash → "/tmp/out.bak" (correct).
+    output_dir  = os.path.normpath(output_dir)
+    staging_dir = os.path.normpath(staging_dir)
+
     # Security: refuse to operate on a symlink as the output target.
     if os.path.islink(output_dir):
         raise ValueError(
