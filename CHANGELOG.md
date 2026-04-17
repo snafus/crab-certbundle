@@ -9,9 +9,39 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`crabctl cert renew`** — revoke-and-reissue workflow that reads all
+  parameters (CN, SANs, profile, CDP URL, validity period) from the existing
+  certificate and issues a replacement in-place.  `--days` overrides the
+  validity period; `--reuse-key` skips key rotation; `--force` bypasses the
+  "still valid" confirmation prompt.  Writes to the same filenames so consuming
+  configurations need only a service reload.
+- **`crabctl cert sign --csr`** — CSR-based issuance where the private key
+  never enters CRAB.  Reads a PEM PKCS#10 CSR, verifies the self-signature,
+  merges any `--san` additions, and issues a certificate using CA policy.
+  No key file is written.  `--cn` overrides the CSR subject CN when absent
+  or when the operator needs a canonical name.
+
+### Fixed
+
+- **`renew_cert` revoke-before-issue ordering** (high) — previous code called
+  `revoke_cert()` before `_issue_cert_with_key()`.  A disk-full, permission, or
+  any other I/O error during issuance left the old certificate permanently
+  revoked with no replacement; any retry then hit "Certificate is already
+  revoked".  Fixed: the new cert is issued first; the old serial is marked
+  revoked (by fingerprint, inline) only after the new cert file is safely
+  written.
+- **`cert_renew` CLI naive/aware datetime mismatch** (forward-compat) —
+  `cryptography >= 42` returns a timezone-aware UTC datetime from
+  `cert.not_valid_after`; `datetime.utcnow()` always returns naive.  Mixing
+  the two raises `TypeError` on any Python + cryptography >= 42 combination.
+  Fixed: `not_valid_after` is normalised to naive UTC by stripping `tzinfo`
+  when present before any arithmetic or comparison.
+
 ---
 
-## [0.3.0] — 2026-04-16
+## [0.3.0] — 2026-04-17
 
 ### Added
 
@@ -47,15 +77,118 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Integration tests for CRL fetching (`TestFetchCRLsIntegration`, 6 tests):
   dry-run, live fetch, PEM format verification, parallel (4 CAs), missing
   CDP URL, server-down soft failure.
+- **`warn:` rules in policy** — a new `warn:` list in the policy config
+  accepts the same rule syntax as `include:` / `exclude:`.  Matching certs
+  pass through to the output directory but are counted as WARN outcomes and
+  trigger exit code 3 when `--strict-warnings` is active.  Evaluation order:
+  non-CA → expired → include → exclude → warn → default ACCEPT.
+- **CRL cache-control** — two new `crl:` config keys:
+  `min_remaining_hours` (warn when a cached CRL's nextUpdate is imminent,
+  default 4 h) and `refetch_before_expiry_hours` (skip re-fetch when a CRL
+  still has sufficient life remaining, default 0 — set to e.g. 12 for
+  weekly-CRL CAs).  `CRLUpdateResult` gains a `skipped` counter.
+- **`crabctl ca intermediate`** — issue an intermediate CA signed by a
+  parent CA; validates parent BasicConstraints (`cA: true`, non-zero
+  pathLenConstraint); supports N-level hierarchies.  `--path-length` caps
+  the depth below this CA.  Writes `ca-chain.pem` (this CA + ancestor
+  intermediates, root excluded) alongside the new CA cert.
+- **`{cn}-fullchain.pem`** — written automatically alongside leaf certs
+  issued by an intermediate CA; contains leaf + all intermediate certs,
+  root excluded (follows the Let's Encrypt / TLS convention expected by
+  most TLS stacks).
+- **Docker Compose PKI support**:
+  - `scripts/compose-pki.sh` — generic shell script (`init`, `issue`,
+    `revoke`, `status`, `clean`) that drives `crabctl` commands using
+    `CRAB_*` environment variables; service-specific extra SANs via
+    `CRAB_SAN_<SERVICE>` indirect expansion.
+  - `docker/Dockerfile.pki` — init-container image extending the production
+    image; all `CRAB_*` vars configurable at runtime via Docker env; runs
+    `compose-pki.sh init` by default then exits.
+  - `examples/docker-compose.pki.yml` — Compose overlay demonstrating the
+    init-container pattern (`restart: "no"`, `condition:
+    service_completed_successfully`) with a shared `pki-data` named volume.
 
 ### Changed
 
 - `_build_profile` now returns `(errors, warned)` tuple instead of a bare
   `int`; callers (`build`, `refresh`) updated accordingly.
+- `--output-format text|json` global flag replaces all per-command `--json`
+  flags.  The flag must precede the subcommand name.  All commands emit
+  structured JSON when `--output-format json` is active.
 - `crl.max_workers` added to JSON Schema `crl_config` definition.
 - `logging.format` added to JSON Schema `logging_config` definition.
 - ROADMAP: `crab status` corrected to `crabctl status` throughout; Prometheus
   and Nagios items moved to Future section.
+
+---
+
+## [0.2.0] — 2026-04-12
+
+### Added
+
+**CRAB-PKI — test CA and certificate generation**
+
+- **`crabctl ca init [CA_DIR]`** — initialise a self-signed root CA.
+  Key type selectable: `rsa2048`, `rsa4096`, `ecdsa-p256`, `ecdsa-p384`,
+  `ed25519`.  Key written mode 0600.  Creates `ca-cert.pem`, `ca-key.pem`,
+  and an empty `serial.db`.
+- **`crabctl ca show [CA_DIR]`** — display CA subject, key type, validity,
+  fingerprint, and serial-database statistics.
+- **`crabctl cert issue`** — issue a leaf certificate from a CA.  Options:
+  `--ca`, `--cn`, `--san` (repeatable), `--profile` (`server`, `client`,
+  `grid-host`), `--key-type`, `--days`, `--cdp-url`.
+  `--add-to-profile` prints the `crab.yaml` source snippet.
+- **`crabctl cert revoke`** — revoke a certificate and regenerate the CRL.
+  Appends a revocation record to `serial.db` and atomically rewrites
+  `ca.crl`.  `--reason` accepts all RFC 5280 reason codes.
+- **`crabctl cert list`** — list serial-database records.  `--revoked` shows
+  only revoked entries.
+- **Certificate profiles**: `server` (serverAuth EKU, DNS SANs),
+  `client` (clientAuth EKU), `grid-host` (serverAuth + clientAuth, CN
+  auto-added as DNS SAN).
+- `keyEncipherment` key usage correctly absent from ECDSA and Ed25519 certs;
+  P-384 CAs sign with SHA-384; all others sign with SHA-256.
+- Serial database (`serial.db`) — JSON-lines format; `fcntl`-locked for
+  concurrent-write safety; stores fingerprint, profile, issued/expires
+  timestamps, cert path, revocation state.
+- `crab/pki.py` — new module exposing `init_ca`, `issue_cert`, `show_ca_info`,
+  `revoke_cert`, `list_issued`, `generate_crl`.
+
+**Config and tooling**
+
+- JSON Schema for `crab.yaml` — enables editor autocompletion via
+  `yaml-language-server` (`# yaml-language-server: $schema=…` header).
+- `crabctl --version` reports the short commit SHA when installed from a
+  git checkout (falls back to "unknown" for sdist/wheel installs).
+- Tox matrix extended to Python 3.12 and 3.13.
+- Debian/Ubuntu `.deb` package (Ubuntu 22.04 LTS and 24.04 LTS).
+- `CONTRIBUTING.md` — development setup, test matrix, coding conventions.
+
+### Fixed
+
+- `file_mode` / `dir_mode` config keys now accept bare integer literals
+  (e.g. `0644`) and `"0o644"`-style octal strings in addition to decimal
+  strings.
+- `crabctl diff` exited 0 in JSON mode regardless of whether changes were
+  present; now exits 1 when additions, removals, or renewals are detected
+  (matching text mode behaviour).
+- Silent parse errors in `_load_certs_from_directory` — bare
+  `except Exception: pass` replaced with `logger.warning(…)` so corrupt
+  or unreadable PEM files surface at log level WARNING instead of being
+  silently skipped.
+- `description:` key in profiles was silently ignored; now stored and
+  displayed in `crabctl show-config` output.
+
+### Architecture
+
+- Source registry and `build_source` factory moved to
+  `crab/sources/__init__.py`; individual source modules unchanged.
+- `PolicyOutcome` changed from a boolean to a ternary enum
+  (`ACCEPT` / `WARN` / `REJECT`); `accepted` is now a property for
+  backwards compatibility; no call-site changes required.
+- `CRLManager.validate_crls` integrated into the `crabctl validate`
+  pipeline — stale or missing CRLs for profiles with `include_crls: true`
+  now appear as `ValidationIssue` entries.
 
 ---
 
@@ -181,5 +314,7 @@ Initial public release.
 
 ---
 
-[Unreleased]: https://github.com/snafus/crab-crab/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/snafus/crab-crab/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/snafus/crab-crab/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/snafus/crab-crab/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/snafus/crab-crab/releases/tag/v0.1.0

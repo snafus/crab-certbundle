@@ -157,6 +157,16 @@ Core trust-directory pipeline, complete and tested.
 - ✅ `examples/docker-compose.pki.yml` — Compose overlay demonstrating the
   init-container pattern with `condition: service_completed_successfully`
 
+### CRAB-PKI — certificate lifecycle
+
+- ✅ `crabctl cert renew CERT --ca CA_DIR` — revoke-and-reissue workflow;
+  reads CN, SANs, profile, CDP URL, and validity from the existing cert;
+  `--days` overrides period; `--reuse-key` skips key rotation; `--force`
+  bypasses the still-valid confirmation prompt
+- ✅ `crabctl cert sign --csr CSR --ca CA_DIR` — CSR-based issuance; private
+  key never enters CRAB; `--cn`, `--san`, `--profile`, `--days`, `--cdp-url`
+  override CSR/default values; no key file is written
+
 ---
 
 ## 🔲 0.4.0 — Trust Policy Enhancements

@@ -420,6 +420,13 @@ crabctl cert revoke --ca ./my-ca \
 
 # 11. Show only revoked certificates
 crabctl cert list --ca ./my-ca --revoked
+
+# 12. Renew a certificate (revoke old, issue replacement in-place)
+crabctl cert renew --ca ./my-ca \
+    ./my-ca/issued/host.example.com-cert.pem
+
+# 13. Sign an externally-generated CSR (private key stays with the requester)
+crabctl cert sign --ca ./my-ca --csr host.csr --profile server
 ```
 
 ### CA directory layout
@@ -598,6 +605,74 @@ revoked certs only. For machine-readable output use the global flag:
 
 ```bash
 crabctl --output-format json cert list --ca ./my-ca
+```
+
+### `crabctl cert renew`
+
+```
+crabctl cert renew --ca CA_DIR CERT [OPTIONS]
+
+  CERT           Path to the PEM certificate to renew
+
+  --days N       Validity period for the replacement cert (default: same as original)
+  --reuse-key    Reuse the existing private key instead of generating a new one
+  --force        Skip the "still valid" confirmation prompt
+```
+
+Revokes the existing certificate (reason: `superseded`) and issues a
+replacement with the same CN, SANs, profile, and CDP URL.  The new cert and
+key are written to the same filenames so consuming configs need only a service
+reload.  The issuance is atomic-safe: the old cert remains valid unless and
+until the new one is successfully written.
+
+```bash
+# Renew with a new key (default)
+crabctl cert renew --ca ./my-ca ./my-ca/issued/host.example.com-cert.pem
+
+# Renew with the same key (e.g. key is in an HSM config or already distributed)
+crabctl cert renew --ca ./my-ca ./my-ca/issued/host.example.com-cert.pem \
+    --reuse-key
+
+# Renew early without confirmation
+crabctl cert renew --ca ./my-ca ./my-ca/issued/host.example.com-cert.pem \
+    --days 365 --force
+```
+
+### `crabctl cert sign`
+
+```
+crabctl cert sign --ca CA_DIR --csr CSR [OPTIONS]
+
+  --ca CA_DIR        Issuing CA directory  [required]
+  --csr CSR          Path to a PEM PKCS#10 CSR  [required]
+  --profile PROFILE  Certificate profile: server, client, grid-host (default: server)
+  --days N           Validity period in days (default: 365)
+  --san SAN          Extra SAN to add (repeatable; prefix DNS:, IP:, EMAIL:)
+  --cdp-url URL      CRL Distribution Point URL
+  --cn TEXT          Override the CN from the CSR
+  --out DIR          Output directory (default: <ca-dir>/issued/)
+```
+
+Issue a certificate from a PKCS#10 CSR.  The private key never enters CRAB —
+only the public key embedded in the CSR is used, and no key file is written.
+This is the recommended workflow when the service generates its own key (Go,
+Rust, Java services), when the key is HSM-backed, or in multi-team setups
+where the CA operator should not handle service private keys.
+
+CRAB applies CA policy (profile, key usage, EKU) regardless of any extensions
+requested in the CSR.
+
+```bash
+# Application generates a key and CSR
+openssl req -newkey rsa:2048 -nodes -keyout svc-key.pem \
+    -out svc.csr -subj "/CN=svc.example.com"
+
+# CA operator signs it — no key file created on the CA side
+crabctl cert sign --ca ./my-ca --csr svc.csr --profile server --days 365
+
+# Add SANs that were not in the CSR
+crabctl cert sign --ca ./my-ca --csr svc.csr \
+    --san DNS:svc.internal --san IP:10.0.0.5
 ```
 
 ### Adding your test CA to a crab profile
