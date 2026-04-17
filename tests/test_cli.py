@@ -26,7 +26,7 @@ class TestVersion:
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
         assert "crabctl" in result.output
-        assert "0.3.0" in result.output
+        assert "0.4.0" in result.output
 
     def test_version_includes_commit(self, runner):
         """Version output includes a commit SHA when one is available."""
@@ -37,7 +37,7 @@ class TestVersion:
             assert __commit__ in result.output
         else:
             # Unknown is acceptable (e.g. installed from a plain tarball).
-            assert "0.3.0" in result.output
+            assert "0.4.0" in result.output
 
     def test_commit_is_resolved(self):
         """__commit__ is a non-empty string (SHA or 'unknown')."""

@@ -200,8 +200,10 @@ class ProfileConfig:
             raise ConfigError(
                 "Profile '{}': required key 'output_path' is missing".format(name)
             )
-        self.output_path = raw["output_path"]
-        self.staging_path = raw.get("staging_path", self.output_path + ".staging")
+        self.output_path = os.path.normpath(raw["output_path"])
+        self.staging_path = os.path.normpath(
+            raw.get("staging_path", self.output_path + ".staging")
+        )
         self.atomic = bool(raw.get("atomic", True))
 
         self.sources = raw.get("sources", [])
