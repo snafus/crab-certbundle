@@ -9,7 +9,7 @@ import stat
 import pytest
 
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec as _ec, ed25519 as _ed25519, rsa as _rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
@@ -25,6 +25,7 @@ from crab.pki import (
     renew_cert,
     revoke_cert,
     show_ca_info,
+    sign_csr,
     _cdp_url_from_cert,
     _days_from_cert,
     _key_type_from_public_key,
@@ -1343,6 +1344,393 @@ class TestCertRenewCLI:
             main,
             ["-q", "cert", "renew", "--ca", ca, "--force",
              str(tmp_path / "nosuchcert.pem")],
+        )
+        assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# sign_csr
+# ---------------------------------------------------------------------------
+
+def _make_csr(cn, sans=None, key_type="rsa2048"):
+    """Return (csr_pem_bytes, private_key) for testing."""
+    from cryptography.hazmat.primitives.asymmetric import rsa as _rsa_gen
+    from cryptography.hazmat.primitives.asymmetric import ec as _ec_gen
+    from cryptography.hazmat.primitives.asymmetric import ed25519 as _ed_gen
+    from cryptography.hazmat.primitives import hashes as _h
+    from cryptography import x509 as _x509
+    from cryptography.x509.oid import NameOID as _NOI
+
+    if key_type == "rsa2048":
+        key = _rsa_gen.generate_private_key(public_exponent=65537, key_size=2048)
+        hash_alg = _h.SHA256()
+    elif key_type == "ecdsa-p256":
+        key = _ec_gen.generate_private_key(_ec_gen.SECP256R1())
+        hash_alg = _h.SHA256()
+    elif key_type == "ed25519":
+        key = _ed_gen.Ed25519PrivateKey.generate()
+        hash_alg = None
+    else:
+        raise ValueError("Unknown key_type: {}".format(key_type))
+
+    attrs = [_x509.NameAttribute(_NOI.COMMON_NAME, cn)]
+    builder = _x509.CertificateSigningRequestBuilder().subject_name(_x509.Name(attrs))
+
+    if sans:
+        import ipaddress as _ip
+        gn_list = []
+        for s in sans:
+            up = s.upper()
+            if up.startswith("DNS:"):
+                gn_list.append(_x509.DNSName(s[4:]))
+            elif up.startswith("IP:"):
+                gn_list.append(_x509.IPAddress(_ip.ip_address(s[3:])))
+            elif up.startswith("EMAIL:"):
+                gn_list.append(_x509.RFC822Name(s[6:]))
+        builder = builder.add_extension(
+            _x509.SubjectAlternativeName(gn_list), critical=False
+        )
+
+    csr = builder.sign(key, hash_alg)
+    return csr.public_bytes(serialization.Encoding.PEM), key
+
+
+class TestSignCSR:
+    """Tests for sign_csr — issue a cert from an external CSR."""
+
+    # -- basic signing -------------------------------------------------------
+
+    def test_returns_cert_path(self, ca_dir, tmp_path):
+        csr_pem, _ = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path)
+        assert os.path.isfile(cert_path)
+        assert cert_path.endswith("-cert.pem")
+
+    def test_no_key_file_written(self, ca_dir, tmp_path):
+        csr_pem, _ = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path)
+        key_path = cert_path.replace("-cert.pem", "-key.pem")
+        assert not os.path.isfile(key_path)
+
+    def test_cert_contains_csr_public_key(self, ca_dir, tmp_path):
+        csr_pem, csr_key = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path)
+        with open(cert_path, "rb") as fh:
+            cert = x509.load_pem_x509_certificate(fh.read())
+        # Public key in cert must match the CSR key
+        cert_pub_pem = cert.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        csr_pub_pem = csr_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        assert cert_pub_pem == csr_pub_pem
+
+    def test_cn_taken_from_csr(self, ca_dir, tmp_path):
+        csr_pem, _ = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path)
+        with open(cert_path, "rb") as fh:
+            cert = x509.load_pem_x509_certificate(fh.read())
+        cn = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+        assert cn == "host.example.com"
+
+    def test_recorded_in_serial_db(self, ca_dir, tmp_path):
+        csr_pem, _ = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        sign_csr(ca_dir, csr_path)
+        records = CADirectory(ca_dir).serial_db.records()
+        assert len(records) == 1
+        assert records[0]["cn"] == "host.example.com"
+        assert records[0]["revoked"] is False
+
+    # -- SAN handling --------------------------------------------------------
+
+    def test_sans_from_csr_preserved(self, ca_dir, tmp_path):
+        csr_pem, _ = _make_csr(
+            "host.example.com",
+            sans=["DNS:host.example.com", "DNS:alt.example.com", "IP:10.0.0.1"]
+        )
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path)
+        with open(cert_path, "rb") as fh:
+            cert = x509.load_pem_x509_certificate(fh.read())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        dns_vals = {gn.value for gn in san if isinstance(gn, x509.DNSName)}
+        assert "host.example.com" in dns_vals
+        assert "alt.example.com" in dns_vals
+
+    def test_extra_sans_merged(self, ca_dir, tmp_path):
+        csr_pem, _ = _make_csr("host.example.com",
+                                sans=["DNS:host.example.com"])
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path,
+                              extra_sans=["DNS:extra.example.com", "IP:192.168.1.1"])
+        with open(cert_path, "rb") as fh:
+            cert = x509.load_pem_x509_certificate(fh.read())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        dns_vals = {gn.value for gn in san if isinstance(gn, x509.DNSName)}
+        assert "extra.example.com" in dns_vals
+
+    def test_cn_auto_added_as_dns_san_when_dotted(self, ca_dir, tmp_path):
+        # CSR has no SAN extension — CN with dot should auto-add DNS SAN
+        csr_pem, _ = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path)
+        with open(cert_path, "rb") as fh:
+            cert = x509.load_pem_x509_certificate(fh.read())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        dns_vals = {gn.value for gn in san if isinstance(gn, x509.DNSName)}
+        assert "host.example.com" in dns_vals
+
+    # -- CN override ---------------------------------------------------------
+
+    def test_cn_override(self, ca_dir, tmp_path):
+        csr_pem, _ = _make_csr("original-cn.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path, cn="override.example.com")
+        with open(cert_path, "rb") as fh:
+            cert = x509.load_pem_x509_certificate(fh.read())
+        cn = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+        assert cn == "override.example.com"
+
+    # -- profile and validity ------------------------------------------------
+
+    def test_profile_applied_by_ca(self, ca_dir, tmp_path):
+        """CA profile overrides whatever was in the CSR (CA policy wins)."""
+        csr_pem, _ = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path, profile="grid-host")
+        with open(cert_path, "rb") as fh:
+            cert = x509.load_pem_x509_certificate(fh.read())
+        eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+        from cryptography.x509.oid import ExtendedKeyUsageOID as _EKU
+        assert _EKU.SERVER_AUTH in list(eku)
+        assert _EKU.CLIENT_AUTH in list(eku)
+
+    def test_days_applied(self, ca_dir, tmp_path):
+        csr_pem, _ = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path, days=42)
+        with open(cert_path, "rb") as fh:
+            cert = x509.load_pem_x509_certificate(fh.read())
+        assert (cert.not_valid_after - cert.not_valid_before).days == 42
+
+    def test_cdp_url_embedded(self, ca_dir, tmp_path):
+        csr_pem, _ = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path,
+                              cdp_url="http://crl.example.com/ca.crl")
+        assert _cdp_url_from_cert(_load_cert(cert_path)) == "http://crl.example.com/ca.crl"
+
+    # -- key types -----------------------------------------------------------
+
+    def test_ecdsa_csr(self, ca_dir, tmp_path):
+        csr_pem, _ = _make_csr("host.example.com", key_type="ecdsa-p256")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir, csr_path)
+        cert = _load_cert(cert_path)
+        # keyEncipherment must be absent for ECDSA keys
+        ku = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+        assert not ku.key_encipherment
+
+    def test_ed25519_csr(self, ca_dir_ed25519, tmp_path):
+        csr_pem, _ = _make_csr("host.example.com", key_type="ed25519")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(ca_dir_ed25519, csr_path)
+        assert os.path.isfile(cert_path)
+
+    # -- intermediate CA / fullchain -----------------------------------------
+
+    def test_fullchain_written_for_intermediate_ca(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA", days=30)
+        init_intermediate_ca(sub, root, cn="Sub CA", days=30)
+        csr_pem, _ = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(sub, csr_path)
+        fullchain = cert_path.replace("-cert.pem", "-fullchain.pem")
+        assert os.path.isfile(fullchain)
+
+    def test_no_key_file_for_intermediate_ca(self, tmp_path):
+        root = str(tmp_path / "root")
+        sub  = str(tmp_path / "sub")
+        init_ca(root, cn="Root CA", days=30)
+        init_intermediate_ca(sub, root, cn="Sub CA", days=30)
+        csr_pem, _ = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        cert_path = sign_csr(sub, csr_path)
+        key_path = cert_path.replace("-cert.pem", "-key.pem")
+        assert not os.path.isfile(key_path)
+
+    # -- error cases ---------------------------------------------------------
+
+    def test_missing_csr_raises(self, ca_dir, tmp_path):
+        with pytest.raises(PKIError, match="not found"):
+            sign_csr(ca_dir, str(tmp_path / "nosuch.csr"))
+
+    def test_missing_ca_raises(self, tmp_path):
+        with pytest.raises(PKIError, match="No CA found"):
+            sign_csr(str(tmp_path / "noca"), "/dev/null")
+
+    def test_invalid_csr_raises(self, ca_dir, tmp_path):
+        bad = str(tmp_path / "bad.csr")
+        with open(bad, "wb") as fh:
+            fh.write(b"not a csr")
+        with pytest.raises(PKIError, match="Cannot parse CSR"):
+            sign_csr(ca_dir, bad)
+
+    def test_csr_without_cn_raises_without_override(self, ca_dir, tmp_path):
+        # Build a CSR with no CN and no SAN → should fail at CN determination
+        from cryptography.hazmat.primitives.asymmetric import rsa as _rsa_gen
+        from cryptography import x509 as _x509
+        from cryptography.hazmat.primitives import hashes as _h
+        key = _rsa_gen.generate_private_key(public_exponent=65537, key_size=2048)
+        csr = (
+            _x509.CertificateSigningRequestBuilder()
+            .subject_name(_x509.Name([]))  # no attributes
+            .sign(key, _h.SHA256())
+        )
+        csr_path = str(tmp_path / "nocn.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr.public_bytes(serialization.Encoding.PEM))
+        with pytest.raises(PKIError, match="no Common Name"):
+            sign_csr(ca_dir, csr_path)
+
+    def test_csr_without_cn_ok_with_override(self, ca_dir, tmp_path):
+        from cryptography.hazmat.primitives.asymmetric import rsa as _rsa_gen
+        from cryptography import x509 as _x509
+        from cryptography.hazmat.primitives import hashes as _h
+        key = _rsa_gen.generate_private_key(public_exponent=65537, key_size=2048)
+        csr = (
+            _x509.CertificateSigningRequestBuilder()
+            .subject_name(_x509.Name([]))
+            .sign(key, _h.SHA256())
+        )
+        csr_path = str(tmp_path / "nocn.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr.public_bytes(serialization.Encoding.PEM))
+        cert_path = sign_csr(ca_dir, csr_path,
+                              cn="provided.example.com",
+                              extra_sans=["DNS:provided.example.com"])
+        assert os.path.isfile(cert_path)
+
+
+class TestCertSignCLI:
+    """CLI-level tests for ``crabctl cert sign``."""
+
+    @pytest.fixture
+    def runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    @pytest.fixture
+    def ca_and_csr(self, tmp_path):
+        ca = str(tmp_path / "ca")
+        init_ca(ca, cn="Test CA", days=30)
+        csr_pem, key = _make_csr("host.example.com")
+        csr_path = str(tmp_path / "host.csr")
+        with open(csr_path, "wb") as fh:
+            fh.write(csr_pem)
+        return ca, csr_path, key
+
+    def test_sign_succeeds(self, runner, ca_and_csr):
+        from crab.cli import main
+        ca, csr_path, _ = ca_and_csr
+        result = runner.invoke(
+            main,
+            ["-q", "cert", "sign", "--ca", ca, "--csr", csr_path],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert "signed" in result.output.lower()
+
+    def test_no_key_written(self, runner, ca_and_csr):
+        from crab.cli import main
+        ca, csr_path, _ = ca_and_csr
+        result = runner.invoke(
+            main,
+            ["-q", "cert", "sign", "--ca", ca, "--csr", csr_path],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        # The output should mention no key file
+        assert "No private key written" in result.output
+
+    def test_profile_flag(self, runner, ca_and_csr):
+        from crab.cli import main
+        ca, csr_path, _ = ca_and_csr
+        result = runner.invoke(
+            main,
+            ["-q", "cert", "sign", "--ca", ca, "--csr", csr_path,
+             "--profile", "grid-host"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        # Find issued cert and verify EKU
+        ca_dir_obj = CADirectory(ca)
+        records = ca_dir_obj.serial_db.records()
+        assert records[0]["profile"] == "grid-host"
+
+    def test_cn_override_flag(self, runner, ca_and_csr):
+        from crab.cli import main
+        ca, csr_path, _ = ca_and_csr
+        result = runner.invoke(
+            main,
+            ["-q", "cert", "sign", "--ca", ca, "--csr", csr_path,
+             "--cn", "override.example.com"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        records = CADirectory(ca).serial_db.records()
+        assert records[0]["cn"] == "override.example.com"
+
+    def test_error_on_missing_csr(self, runner, tmp_path):
+        from crab.cli import main
+        ca = str(tmp_path / "ca")
+        init_ca(ca, cn="Test CA", days=30)
+        result = runner.invoke(
+            main,
+            ["-q", "cert", "sign", "--ca", ca,
+             "--csr", str(tmp_path / "nosuch.csr")],
         )
         assert result.exit_code != 0
 

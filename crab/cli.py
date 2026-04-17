@@ -36,8 +36,8 @@ from crab.crl import CRLManager
 from crab.output import OutputProfile, build_output
 from crab.policy import PolicyEngine
 from crab.pki import (
-    init_ca, init_intermediate_ca, issue_cert, renew_cert, revoke_cert,
-    generate_crl, show_ca_info, list_issued,
+    init_ca, init_intermediate_ca, issue_cert, renew_cert, sign_csr,
+    revoke_cert, generate_crl, show_ca_info, list_issued,
     CERT_PROFILES, KEY_TYPES, REVOKE_REASONS,
     PKIError, CADirectory,
 )
@@ -1079,6 +1079,78 @@ def cert_issue(ca_dir, cn, sans, days, profile, key_type, out_dir, cdp_url):
     click.echo("  CN          : {}".format(cn))
     click.echo("  Profile     : {}".format(profile))
     click.echo("  Valid for   : {} days".format(days))
+
+
+@cert_group.command("sign")
+@click.option("--ca", "ca_dir", required=True, metavar="CA_DIR",
+              help="Path to the CA directory.")
+@click.option("--csr", "csr_path", required=True, metavar="CSR",
+              type=click.Path(exists=True),
+              help="Path to a PEM-format PKCS#10 Certificate Signing Request.")
+@click.option("--profile", default="server", show_default=True,
+              type=click.Choice(CERT_PROFILES),
+              help="Certificate profile (CA policy — overrides any EKU in the CSR).")
+@click.option("--days", default=365, show_default=True, type=int,
+              help="Validity period in days.")
+@click.option("--san", "extra_sans", multiple=True, metavar="SAN",
+              help="Additional SANs to merge with those in the CSR (repeatable).  "
+                   "Prefix: DNS: IP: EMAIL:")
+@click.option("--cdp-url", default=None, metavar="URL",
+              help="CRL Distribution Point URL to embed in the certificate.")
+@click.option("--out", "out_dir", default=None, metavar="DIR",
+              help="Output directory (default: <ca-dir>/issued/).")
+@click.option("--cn", default=None, metavar="NAME",
+              help="Override the Common Name from the CSR.")
+def cert_sign(ca_dir, csr_path, profile, days, extra_sans, cdp_url, out_dir, cn):
+    """
+    Sign a CSR and issue a certificate.  No private key is written.
+
+    The private key never enters CRAB — only the public key embedded in the
+    CSR is used.  Profile and validity are set by CA policy (the --profile
+    and --days flags), not by what the CSR requests.
+
+    \b
+    Examples:
+        # Basic: sign a CSR using the CA's default policy
+        crabctl cert sign --ca ./my-ca --csr host.csr
+
+        # Override profile and validity
+        crabctl cert sign --ca ./my-ca --csr host.csr \\
+            --profile grid-host --days 180
+
+        # Add extra SANs beyond those in the CSR
+        crabctl cert sign --ca ./my-ca --csr host.csr \\
+            --san DNS:alt.example.com --san IP:10.0.0.5
+
+        # CSR has no CN — supply one explicitly
+        crabctl cert sign --ca ./my-ca --csr service.csr --cn myservice.example.com
+    """
+    try:
+        cert_path = sign_csr(
+            ca_dir,
+            csr_path,
+            profile=profile,
+            days=days,
+            extra_sans=list(extra_sans),
+            cdp_url=cdp_url,
+            out_dir=out_dir,
+            cn=cn,
+        )
+    except PKIError as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+    except (IOError, OSError) as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+
+    click.echo("Certificate signed:")
+    click.echo("  Certificate : {}".format(cert_path))
+    fullchain_path = cert_path.replace("-cert.pem", "-fullchain.pem")
+    if os.path.isfile(fullchain_path):
+        click.echo("  Full chain  : {}".format(fullchain_path))
+    click.echo("  Profile     : {}".format(profile))
+    click.echo("  Valid for   : {} days".format(days))
+    click.echo("  Note        : No private key written — requester retains the key.")
 
 
 @cert_group.command("revoke")

@@ -23,6 +23,7 @@ init_ca                Create a new self-signed root CA.
 init_intermediate_ca   Create an intermediate CA signed by an existing CA.
 issue_cert             Issue a certificate signed by a CA.
 renew_cert             Revoke an existing certificate and re-issue with the same parameters.
+sign_csr               Sign a PKCS#10 CSR and issue a certificate (no key file written).
 revoke_cert            Revoke a certificate and regenerate the CRL.
 generate_crl           Regenerate the CRL from the serial database.
 show_ca_info           Return a dict of CA details.
@@ -874,35 +875,36 @@ def _eku_for_profile(profile):
     raise PKIError("Unknown profile {!r}. Valid: {}".format(profile, ", ".join(CERT_PROFILES)))
 
 
-def _issue_cert_with_key(ca, ca_cert, ca_key, key, cn, sans, days, profile, cdp_url, out_dir):
-    # type: (...) -> Tuple[str, str]
+def _build_and_record_cert(ca, ca_cert, ca_key, public_key, cn, sans, days, profile, cdp_url, out_dir):
+    # type: (...) -> str
     """
-    Core certificate-signing operation.  Builds, signs, records, and writes
-    a certificate using an already-loaded *key*.
+    Core certificate-signing operation.  Builds, signs, writes the cert
+    file (and fullchain when appropriate), and records the issuance in the
+    serial database.
 
-    This is the shared implementation used by :func:`issue_cert` (which
-    generates a fresh key) and :func:`renew_cert` (which may reuse an
-    existing key).
+    *public_key* is the subject public key — either derived from a private
+    key (in :func:`_issue_cert_with_key`) or extracted from a CSR (in
+    :func:`sign_csr`).  No private key material is handled here.
 
     Parameters
     ----------
-    ca:       :class:`CADirectory` for the issuing CA.
-    ca_cert:  Loaded CA certificate.
-    ca_key:   Loaded CA private key.
-    key:      Private key for the new certificate (generated or loaded).
-    cn:       Common Name.
-    sans:     SAN strings (``DNS:…``, ``IP:…``, ``EMAIL:…``).
-    days:     Validity period in days.
-    profile:  ``server``, ``client``, or ``grid-host``.
-    cdp_url:  Optional CRL Distribution Point URL.
-    out_dir:  Directory to write output files (must already exist).
+    ca:         :class:`CADirectory` for the issuing CA.
+    ca_cert:    Loaded CA certificate.
+    ca_key:     Loaded CA private key (used only for signing).
+    public_key: Subject public key for the new certificate.
+    cn:         Common Name.
+    sans:       SAN strings (``DNS:…``, ``IP:…``, ``EMAIL:…``).
+    days:       Validity period in days.
+    profile:    ``server``, ``client``, or ``grid-host``.
+    cdp_url:    Optional CRL Distribution Point URL.
+    out_dir:    Directory to write output files (must already exist).
 
     Returns
     -------
-    (cert_path, key_path)
+    cert_path
     """
-    pub    = key.public_key()
-    no_enc = _no_key_encipherment(key)
+    # keyEncipherment must be absent from non-RSA certs.
+    no_enc = not isinstance(public_key, _rsa_mod.RSAPublicKey)
 
     # Build SAN list.  Auto-add CN as a DNS SAN for hostnames.
     san_objects  = []
@@ -935,12 +937,12 @@ def _issue_cert_with_key(ca, ca_cert, ca_key, key, cn, sans, days, profile, cdp_
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(ca_cert.subject)
-        .public_key(pub)
+        .public_key(public_key)
         .serial_number(serial)
         .not_valid_before(now)
         .not_valid_after(not_after)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-        .add_extension(x509.SubjectKeyIdentifier.from_public_key(pub), critical=False)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(public_key), critical=False)
         .add_extension(
             x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski),
             critical=False,
@@ -967,11 +969,8 @@ def _issue_cert_with_key(ca, ca_cert, ca_key, key, cn, sans, days, profile, cdp_
     fp       = _cert_fp(cert)
     safe_cn  = _safe_filename(cn)
     cert_pem = cert.public_bytes(serialization.Encoding.PEM)
-
     cert_path = os.path.join(out_dir, "{}-cert.pem".format(safe_cn))
-    key_path  = os.path.join(out_dir, "{}-key.pem".format(safe_cn))
 
-    _write_atomic(key_path,  _key_pem(key), mode=0o600)
     _write_atomic(cert_path, cert_pem)
 
     # Write fullchain when the issuing CA is an intermediate.
@@ -1002,6 +1001,27 @@ def _issue_cert_with_key(ca, ca_cert, ca_key, key, cn, sans, days, profile, cdp_
     logger.info(
         "Issued cert serial=%d cn=%r profile=%s valid until %s",
         serial, cn, profile, _format_date(not_after),
+    )
+    return cert_path
+
+
+def _issue_cert_with_key(ca, ca_cert, ca_key, key, cn, sans, days, profile, cdp_url, out_dir):
+    # type: (...) -> Tuple[str, str]
+    """
+    Issue a certificate from a private key.  Writes the key file first
+    (mode 0600), then delegates to :func:`_build_and_record_cert`.
+
+    Used by :func:`issue_cert` (fresh key) and :func:`renew_cert`
+    (optionally reused key).
+
+    Returns (cert_path, key_path).
+    """
+    safe_cn  = _safe_filename(cn)
+    key_path = os.path.join(out_dir, "{}-key.pem".format(safe_cn))
+    # Write key before cert so that if the cert write fails the key is not lost.
+    _write_atomic(key_path, _key_pem(key), mode=0o600)
+    cert_path = _build_and_record_cert(
+        ca, ca_cert, ca_key, key.public_key(), cn, sans, days, profile, cdp_url, out_dir
     )
     return cert_path, key_path
 
@@ -1205,6 +1225,129 @@ def renew_cert(
 
     return _issue_cert_with_key(
         ca, ca_cert, ca_key, key, cn, sans, days, profile, cdp_url, out_dir
+    )
+
+
+# ---------------------------------------------------------------------------
+# CSR signing
+# ---------------------------------------------------------------------------
+
+def sign_csr(
+    ca_dir_path,            # type: str
+    csr_path,               # type: str
+    profile="server",       # type: str
+    days=365,               # type: int
+    extra_sans=None,        # type: Optional[List[str]]
+    cdp_url=None,           # type: Optional[str]
+    out_dir=None,           # type: Optional[str]
+    cn=None,                # type: Optional[str]
+):
+    # type: (...) -> str
+    """
+    Sign a PKCS#10 CSR and issue a certificate.
+
+    The private key never enters CRAB — only the public key embedded in the
+    CSR is used.  No key file is written.  This is the standard workflow for
+    applications that generate their own keys (Go/Rust services, HSM-backed
+    keys, multi-team setups where the CA operator should not handle service
+    private keys).
+
+    Parameters
+    ----------
+    ca_dir_path: Path to the issuing CA directory.
+    csr_path:    Path to a PEM-format PKCS#10 Certificate Signing Request.
+    profile:     Certificate profile — ``server``, ``client``, or
+                 ``grid-host``.  The CA applies this regardless of any EKU
+                 embedded in the CSR (CA policy takes precedence).
+    days:        Validity period in days.
+    extra_sans:  Additional SANs to merge with those already in the CSR.
+                 Each entry may be prefixed with ``DNS:``, ``IP:``, or
+                 ``EMAIL:``.
+    cdp_url:     CRL Distribution Point URL to embed in the certificate.
+    out_dir:     Output directory (default: ``<ca-dir>/issued/``).
+    cn:          Override the Common Name from the CSR.  Required when the
+                 CSR has no CN subject attribute.
+
+    Returns
+    -------
+    cert_path — path to the written PEM certificate.  No key file is
+    written; the requester retains the private key.
+
+    Raises
+    ------
+    PKIError  if the CA or CSR file is not found, the CSR cannot be
+              parsed, the self-signature is invalid, no CN can be
+              determined, or on I/O errors.
+    """
+    ca = CADirectory(ca_dir_path)
+    if not ca.exists():
+        raise PKIError("No CA found in '{}'.".format(ca_dir_path))
+
+    if profile not in CERT_PROFILES:
+        raise PKIError(
+            "Unknown profile {!r}. Valid: {}".format(profile, ", ".join(CERT_PROFILES))
+        )
+
+    if not os.path.isfile(csr_path):
+        raise PKIError("CSR file not found: {}".format(csr_path))
+
+    with open(csr_path, "rb") as fh:
+        csr_data = fh.read()
+
+    try:
+        csr = x509.load_pem_x509_csr(csr_data)
+    except (ValueError, TypeError) as exc:
+        raise PKIError("Cannot parse CSR: {}".format(exc))
+
+    if not csr.is_signature_valid:
+        raise PKIError(
+            "CSR self-signature is invalid — the CSR may have been tampered with."
+        )
+
+    # Determine CN: override takes priority, then CSR subject.
+    if cn is None:
+        cn_attrs = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if not cn_attrs:
+            raise PKIError(
+                "CSR has no Common Name.  Use --cn to provide one."
+            )
+        cn = cn_attrs[0].value
+
+    # Collect SANs: CSR extension first, then caller-supplied extras.
+    # The CA does not blindly trust what the requester asks for in the CSR
+    # SAN extension, but for test/lab PKI it is conventional to honour them.
+    csr_sans = []
+    try:
+        san_ext = csr.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName
+        ).value
+        for gn in san_ext:
+            if isinstance(gn, x509.DNSName):
+                csr_sans.append("DNS:{}".format(gn.value))
+            elif isinstance(gn, x509.IPAddress):
+                csr_sans.append("IP:{}".format(str(gn.value)))
+            elif isinstance(gn, x509.RFC822Name):
+                csr_sans.append("EMAIL:{}".format(gn.value))
+    except x509.ExtensionNotFound:
+        pass
+
+    all_sans = csr_sans + list(extra_sans or [])
+
+    ca_cert = ca.load_cert()
+    ca_key  = ca.load_key()
+
+    if out_dir is None:
+        out_dir = ca.issued_dir
+    os.makedirs(out_dir, mode=0o755, exist_ok=True)
+
+    logger.info(
+        "Signing CSR cn=%r profile=%s days=%d csr=%s",
+        cn, profile, days, csr_path,
+    )
+
+    return _build_and_record_cert(
+        ca, ca_cert, ca_key, csr.public_key(),
+        cn, all_sans, days, profile, cdp_url, out_dir,
     )
 
 
