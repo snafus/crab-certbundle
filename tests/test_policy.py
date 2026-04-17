@@ -277,3 +277,77 @@ class TestPolicyOutcome:
         with patch.object(engine, "evaluate", return_value=warn_decision):
             result = engine.filter(certs)
         assert len(result) == len(certs)
+
+
+# ---------------------------------------------------------------------------
+# warn: policy rules
+# ---------------------------------------------------------------------------
+
+class TestPolicyEngineWarnRules:
+    """warn: rules include the cert but flag it with WARN outcome."""
+
+    def test_warn_by_subject_regex(self, ca_pem):
+        engine = PolicyEngine({"warn": [{"subject_regex": "Test CA"}]})
+        decision = engine.evaluate(_get_ca(ca_pem))
+        assert decision.accepted is True
+        assert decision.outcome == "warn"
+
+    def test_warn_non_matching_rule_gives_accept(self, ca_pem):
+        engine = PolicyEngine({"warn": [{"subject_regex": "DoesNotExist"}]})
+        decision = engine.evaluate(_get_ca(ca_pem))
+        assert decision.accepted is True
+        assert decision.outcome == "accept"
+
+    def test_warn_by_fingerprint(self, ca_pem):
+        ci = _get_ca(ca_pem)
+        engine = PolicyEngine({"warn": [{"fingerprint_sha256": ci.fingerprint_sha256}]})
+        decision = engine.evaluate(ci)
+        assert decision.outcome == "warn"
+
+    def test_warn_by_source(self, ca_pem):
+        ci = _get_ca(ca_pem)
+        ci.source_name = "legacy-source"
+        engine = PolicyEngine({"warn": [{"source": "legacy-source"}]})
+        decision = engine.evaluate(ci)
+        assert decision.outcome == "warn"
+
+    def test_warn_evaluated_after_exclude(self, ca_pem):
+        """A cert rejected by exclude: should still be rejected even if warn: would match."""
+        ci = _get_ca(ca_pem)
+        engine = PolicyEngine({
+            "exclude": [{"subject_regex": "Test CA"}],
+            "warn": [{"subject_regex": "Test CA"}],
+        })
+        assert engine.evaluate(ci).accepted is False
+
+    def test_warn_evaluated_after_include(self, ca_pem):
+        """include: can gate warn: — cert not in include set is rejected, not warned."""
+        ci = _get_ca(ca_pem)
+        engine = PolicyEngine({
+            "include": [{"subject_regex": "DoesNotExist"}],
+            "warn": [{"subject_regex": "Test CA"}],
+        })
+        assert engine.evaluate(ci).accepted is False
+
+    def test_warn_cert_appears_in_filter_output(self, ca_pem):
+        """filter() includes warned certs in the accepted list."""
+        from crab.policy import PolicyOutcome
+        engine = PolicyEngine({"warn": [{"subject_regex": "Test CA"}]})
+        certs = parse_pem_data(ca_pem)
+        accepted = engine.filter(certs)
+        assert len(accepted) == 1
+
+    def test_count_warnings_counts_warn_certs(self, ca_pem):
+        engine = PolicyEngine({"warn": [{"subject_regex": "Test CA"}]})
+        certs = parse_pem_data(ca_pem)
+        assert engine.count_warnings(certs) == 1
+
+    def test_count_warnings_zero_when_no_warn_rules(self, ca_pem):
+        engine = PolicyEngine({})
+        certs = parse_pem_data(ca_pem)
+        assert engine.count_warnings(certs) == 0
+
+    def test_warn_reason_mentions_rule(self, ca_pem):
+        engine = PolicyEngine({"warn": [{"subject_regex": "Test CA"}]})
+        decision = engine.evaluate(_get_ca(ca_pem))
+        assert "warn" in decision.reason.lower()

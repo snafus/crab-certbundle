@@ -553,7 +553,8 @@ class TestValidateCrls:
             issuer_hash=issuer_hash,
             issuer_dn="/CN=Test CA",
             this_update=datetime.now(timezone.utc) - timedelta(hours=48),
-            next_update=datetime.now(timezone.utc) + timedelta(hours=1),
+            # next_update must be far enough ahead to not trigger min_remaining_hours (default 4)
+            next_update=datetime.now(timezone.utc) + timedelta(hours=24),
             file_path=str(tmp_path / (issuer_hash + ".r0")),
         )
         with patch("crab.crl._parse_crl_file", return_value=stale_info):
@@ -762,3 +763,147 @@ class TestParseCrlDateValueError:
         text = "        Last Update: QQQ 99 00:00:00 2025 GMT\n"
         result = _parse_crl_date(text, "Last Update:")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# CRLInfo.will_expire_soon / remaining_hours
+# ---------------------------------------------------------------------------
+
+class TestCRLInfoExpirySoon:
+    def _make_info(self, this_update, next_update):
+        return CRLInfo(
+            issuer_hash="a1b2c3d4",
+            issuer_dn="/CN=Test CA",
+            this_update=this_update,
+            next_update=next_update,
+        )
+
+    def test_will_expire_soon_true_when_imminent(self):
+        info = self._make_info(
+            this_update=datetime.now(timezone.utc) - timedelta(hours=23),
+            next_update=datetime.now(timezone.utc) + timedelta(hours=2),
+        )
+        assert info.will_expire_soon(min_remaining_hours=4) is True
+
+    def test_will_expire_soon_false_when_plenty_of_time(self):
+        info = self._make_info(
+            this_update=datetime.now(timezone.utc) - timedelta(hours=1),
+            next_update=datetime.now(timezone.utc) + timedelta(hours=48),
+        )
+        assert info.will_expire_soon(min_remaining_hours=4) is False
+
+    def test_will_expire_soon_true_when_next_update_none(self):
+        info = self._make_info(
+            this_update=datetime.now(timezone.utc) - timedelta(hours=1),
+            next_update=None,
+        )
+        assert info.will_expire_soon(min_remaining_hours=4) is True
+
+    def test_remaining_hours_positive(self):
+        info = self._make_info(
+            this_update=datetime.now(timezone.utc) - timedelta(hours=1),
+            next_update=datetime.now(timezone.utc) + timedelta(hours=10),
+        )
+        assert 9.0 < info.remaining_hours() < 11.0
+
+    def test_remaining_hours_negative_when_expired(self):
+        info = self._make_info(
+            this_update=datetime.now(timezone.utc) - timedelta(hours=25),
+            next_update=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+        assert info.remaining_hours() < 0
+
+    def test_remaining_hours_zero_when_next_update_none(self):
+        info = self._make_info(
+            this_update=datetime.now(timezone.utc) - timedelta(hours=1),
+            next_update=None,
+        )
+        assert info.remaining_hours() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# CRLManager — min_remaining_hours and refetch_before_expiry_hours
+# ---------------------------------------------------------------------------
+
+class TestCRLManagerCacheControl:
+    def test_min_remaining_hours_default(self, tmp_path):
+        mgr = CRLManager({}, str(tmp_path))
+        assert mgr.min_remaining_hours == 4
+
+    def test_min_remaining_hours_custom(self, tmp_path):
+        mgr = CRLManager({"min_remaining_hours": 12}, str(tmp_path))
+        assert mgr.min_remaining_hours == 12
+
+    def test_refetch_before_expiry_hours_default(self, tmp_path):
+        mgr = CRLManager({}, str(tmp_path))
+        assert mgr.refetch_before_expiry_hours == 0
+
+    def test_refetch_before_expiry_hours_custom(self, tmp_path):
+        mgr = CRLManager({"refetch_before_expiry_hours": 48}, str(tmp_path))
+        assert mgr.refetch_before_expiry_hours == 48
+
+    def test_validate_crls_warns_when_expiring_soon(self, tmp_path):
+        """validate_crls warns when nextUpdate is within min_remaining_hours."""
+        from unittest.mock import patch, MagicMock
+        from crab.cert import parse_pem_data
+        from tests.conftest import _make_ca_cert
+
+        pem, _, _ = _make_ca_cert()
+        ci = parse_pem_data(pem)[0]
+        mgr = CRLManager({"min_remaining_hours": 10}, str(tmp_path))
+
+        # Plant a fake CRL file so _find_crl_file returns a path
+        crl_path = str(tmp_path / "00000000.r0")
+        open(crl_path, "wb").close()
+
+        imminent_info = CRLInfo(
+            issuer_hash="00000000",
+            issuer_dn="/CN=Test CA",
+            this_update=datetime.now(timezone.utc) - timedelta(hours=1),
+            next_update=datetime.now(timezone.utc) + timedelta(hours=2),  # <10h away
+        )
+        with patch.object(mgr, "_get_issuer_hash", return_value="00000000"), \
+             patch("crab.crl._parse_crl_file", return_value=imminent_info):
+            warnings = mgr.validate_crls([ci])
+
+        assert any("expires in" in w for w in warnings)
+        assert any("2.0" in w or "1." in w for w in warnings)  # hours shown
+
+    def test_validate_crls_stale_warning_not_triggered_by_expiry_soon(self, tmp_path):
+        """An expiring-soon CRL emits expiry warning, not staleness warning."""
+        from unittest.mock import patch
+        from crab.cert import parse_pem_data
+        from tests.conftest import _make_ca_cert
+
+        pem, _, _ = _make_ca_cert()
+        ci = parse_pem_data(pem)[0]
+        mgr = CRLManager({"min_remaining_hours": 10, "max_age_hours": 1}, str(tmp_path))
+
+        crl_path = str(tmp_path / "00000000.r0")
+        open(crl_path, "wb").close()
+
+        imminent_info = CRLInfo(
+            issuer_hash="00000000",
+            issuer_dn="/CN=Test CA",
+            this_update=datetime.now(timezone.utc) - timedelta(hours=5),
+            next_update=datetime.now(timezone.utc) + timedelta(hours=2),
+        )
+        with patch.object(mgr, "_get_issuer_hash", return_value="00000000"), \
+             patch("crab.crl._parse_crl_file", return_value=imminent_info):
+            warnings = mgr.validate_crls([ci])
+
+        # Should have expiry-soon warning, not stale warning
+        assert any("expires in" in w for w in warnings)
+        assert not any("Stale" in w for w in warnings)
+
+
+class TestCRLUpdateResultSkipped:
+    def test_skipped_field_exists(self):
+        r = CRLUpdateResult()
+        assert hasattr(r, "skipped")
+        assert r.skipped == []
+
+    def test_repr_includes_skipped(self):
+        r = CRLUpdateResult()
+        r.skipped.append("some CA")
+        assert "skipped=1" in repr(r)

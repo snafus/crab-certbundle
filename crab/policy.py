@@ -12,8 +12,11 @@ Policy rules are evaluated in order:
 3. Explicit *include* rules — if any are defined, the certificate must match
    at least one to continue.
 4. Explicit *exclude* rules — if any match the certificate is rejected.
+5. Explicit *warn* rules — if any match the certificate is included with a
+   ``WARN`` outcome rather than ``ACCEPT``.  Warnings are surfaced by
+   ``--strict-warnings`` (exit 3) and logged at WARNING level.
 
-If a certificate passes all checks it is accepted.
+If a certificate passes all checks without matching a warn rule it is accepted.
 """
 
 import logging
@@ -101,6 +104,8 @@ class PolicyEngine:
             - subject_regex: "CN=Revoked CA.*"
             - fingerprint_sha256: "CC:DD:..."
             - source: "some-source-name"
+          warn:
+            - subject_regex: "CN=Expiring CA.*"  # included but flagged
     """
 
     def __init__(self, policy_config=None):
@@ -116,9 +121,11 @@ class PolicyEngine:
 
         raw_include = cfg.get("include", [])
         raw_exclude = cfg.get("exclude", [])
+        raw_warn = cfg.get("warn", [])
 
         self._include_rules = [_compile_rule(r) for r in raw_include]
         self._exclude_rules = [_compile_rule(r) for r in raw_exclude]
+        self._warn_rules = [_compile_rule(r) for r in raw_warn]
 
     def evaluate(self, cert_info):
         # type: (CertificateInfo) -> PolicyDecision
@@ -163,6 +170,11 @@ class PolicyEngine:
         for rule in self._exclude_rules:
             if rule(cert_info):
                 return _reject("matched exclude rule")
+
+        # 6. Warn rules — certificate is included but flagged
+        for rule in self._warn_rules:
+            if rule(cert_info):
+                return PolicyDecision(PolicyOutcome.WARN, "matched warn rule")
 
         return ACCEPT
 

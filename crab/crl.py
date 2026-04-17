@@ -59,6 +59,7 @@ class CRLInfo:
 
     def is_stale(self, max_age_hours=DEFAULT_MAX_AGE_HOURS):
         # type: (int) -> bool
+        """True when thisUpdate is older than *max_age_hours* ago."""
         if self.next_update is None:
             return True
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
@@ -66,9 +67,26 @@ class CRLInfo:
 
     def is_expired(self):
         # type: () -> bool
+        """True when nextUpdate is in the past (CRL validity window has closed)."""
         if self.next_update is None:
             return True
         return datetime.now(timezone.utc) > self.next_update
+
+    def will_expire_soon(self, min_remaining_hours):
+        # type: (int) -> bool
+        """True when nextUpdate is less than *min_remaining_hours* away."""
+        if self.next_update is None:
+            return True
+        threshold = datetime.now(timezone.utc) + timedelta(hours=min_remaining_hours)
+        return self.next_update < threshold
+
+    def remaining_hours(self):
+        # type: () -> float
+        """Hours until nextUpdate (negative if already expired)."""
+        if self.next_update is None:
+            return 0.0
+        delta = self.next_update - datetime.now(timezone.utc)
+        return delta.total_seconds() / 3600.0
 
     def __repr__(self):
         return "CRLInfo(issuer={!r}, nextUpdate={})".format(
@@ -81,17 +99,27 @@ class CRLManager:
     Fetch and manage CRLs for a set of CA certificates.
 
     Config keys (from profile → crl block):
-        fetch           Whether to fetch CRLs.  Default True.
-        crl_path        Directory to store CRL files.
-                        Defaults to the profile output_path.
-        max_age_hours   CRLs older than this are stale.  Default 24.
-        verify_tls      Verify TLS when downloading CRLs.  Default True.
-                        **Security note:** only set to false in air-gapped
-                        environments with a known-good internal PKI.
-        timeout_seconds HTTP fetch timeout per request.  Default 30.
-        max_workers     Maximum parallel CRL fetch threads.  Default 8.
-                        Set to 1 to restore serial behaviour.
-        sources         ["distribution", "igtf"] — where to look for URLs.
+        fetch                    Whether to fetch CRLs.  Default True.
+        crl_path                 Directory to store CRL files.
+                                 Defaults to the profile output_path.
+        max_age_hours            CRLs whose thisUpdate is older than this
+                                 are flagged stale.  Default 24.
+                                 Increase for CAs that publish weekly CRLs.
+        min_remaining_hours      Warn when a CRL's nextUpdate is less than
+                                 this many hours away.  Default 4.
+        refetch_before_expiry_hours
+                                 Skip re-fetching a CRL that still has more
+                                 than this many hours of validity remaining.
+                                 0 (default) means always re-fetch.
+                                 Set to e.g. 48 to avoid hammering servers
+                                 for CAs that publish weekly CRLs.
+        verify_tls               Verify TLS when downloading CRLs.  Default True.
+                                 **Security note:** only set to false in air-gapped
+                                 environments with a known-good internal PKI.
+        timeout_seconds          HTTP fetch timeout per request.  Default 30.
+        max_workers              Maximum parallel CRL fetch threads.  Default 8.
+                                 Set to 1 to restore serial behaviour.
+        sources                  ["distribution", "igtf"] — where to look for URLs.
     """
 
     def __init__(self, crl_config, output_path):
@@ -101,6 +129,10 @@ class CRLManager:
             crl_config.get("crl_path", output_path), "crl_path"
         )
         self.max_age_hours = int(crl_config.get("max_age_hours", DEFAULT_MAX_AGE_HOURS))
+        self.min_remaining_hours = int(crl_config.get("min_remaining_hours", 4))
+        self.refetch_before_expiry_hours = int(
+            crl_config.get("refetch_before_expiry_hours", 0)
+        )
         self.verify_tls = bool(crl_config.get("verify_tls", True))
         self.timeout = int(crl_config.get("timeout_seconds", 30))
         self.max_workers = max(1, int(crl_config.get("max_workers", 8)))
@@ -141,10 +173,28 @@ class CRLManager:
                 urls = self._get_crl_urls(ci)
                 if not urls:
                     result.missing.append(ci.subject)
-                else:
-                    for url in urls[:1]:  # report first URL only, like live mode
-                        logger.info("[dry-run] Would fetch CRL: %s", url)
-                        result.would_fetch.append(url)
+                    continue
+                # Still honour refetch_before_expiry_hours in dry-run mode.
+                if self.refetch_before_expiry_hours > 0:
+                    issuer_hash = self._get_issuer_hash(ci)
+                    existing = self._find_crl_file(issuer_hash)
+                    if existing:
+                        try:
+                            existing_info = _parse_crl_file(existing)
+                            if not existing_info.will_expire_soon(
+                                self.refetch_before_expiry_hours
+                            ):
+                                logger.info(
+                                    "[dry-run] Would skip CRL fetch for %s: %.1fh remaining",
+                                    ci.subject, existing_info.remaining_hours(),
+                                )
+                                result.skipped.append(ci.subject)
+                                continue
+                        except Exception:
+                            pass
+                for url in urls[:1]:  # report first URL only, like live mode
+                    logger.info("[dry-run] Would fetch CRL: %s", url)
+                    result.would_fetch.append(url)
             return result
 
         import requests as _requests
@@ -158,6 +208,28 @@ class CRLManager:
                 with result_lock:
                     result.missing.append(ci.subject)
                 return
+
+            # Skip re-fetch if existing CRL still has plenty of validity left.
+            if self.refetch_before_expiry_hours > 0:
+                issuer_hash = self._get_issuer_hash(ci)
+                existing = self._find_crl_file(issuer_hash)
+                if existing:
+                    try:
+                        existing_info = _parse_crl_file(existing)
+                        if not existing_info.will_expire_soon(
+                            self.refetch_before_expiry_hours
+                        ):
+                            logger.debug(
+                                "Skipping CRL fetch for %s: %.1fh remaining (> %dh threshold)",
+                                ci.subject,
+                                existing_info.remaining_hours(),
+                                self.refetch_before_expiry_hours,
+                            )
+                            with result_lock:
+                                result.skipped.append(ci.subject)
+                            return
+                    except Exception:
+                        pass  # parse failure → fall through to fetch
 
             for url in urls:
                 try:
@@ -215,6 +287,16 @@ class CRLManager:
                     warnings.append("Expired CRL for {}: {}".format(
                         ci.subject, crl_file
                     ))
+                elif crl_info.will_expire_soon(self.min_remaining_hours):
+                    warnings.append(
+                        "CRL for {} expires in {:.1f}h (nextUpdate={}): {}".format(
+                            ci.subject,
+                            crl_info.remaining_hours(),
+                            crl_info.next_update.strftime("%Y-%m-%d %H:%M UTC")
+                            if crl_info.next_update else "?",
+                            crl_file,
+                        )
+                    )
                 elif crl_info.is_stale(self.max_age_hours):
                     warnings.append("Stale CRL for {} (thisUpdate={}): {}".format(
                         ci.subject,
@@ -395,16 +477,17 @@ def _safe_abspath(path, field_name):
 class CRLUpdateResult:
     """Summary of a :meth:`CRLManager.update_crls` run."""
 
-    __slots__ = ("updated", "failed", "missing", "would_fetch", "errors")
+    __slots__ = ("updated", "failed", "missing", "skipped", "would_fetch", "errors")
 
     def __init__(self):
         self.updated = []       # type: List[str]
         self.failed = []        # type: List[str]
         self.missing = []       # type: List[str]
+        self.skipped = []       # type: List[str]  # fresh enough; not re-fetched
         self.would_fetch = []   # type: List[str]
         self.errors = []        # type: List[str]
 
     def __repr__(self):
-        return "CRLUpdateResult(updated={}, failed={}, missing={})".format(
-            len(self.updated), len(self.failed), len(self.missing)
+        return "CRLUpdateResult(updated={}, failed={}, missing={}, skipped={})".format(
+            len(self.updated), len(self.failed), len(self.missing), len(self.skipped)
         )

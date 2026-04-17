@@ -265,6 +265,11 @@
           "type": "array",
           "description": "Explicit exclude rules. A certificate matching any rule is dropped.",
           "items": { "$ref": "#/definitions/policy_rule" }
+        },
+        "warn": {
+          "type": "array",
+          "description": "Warn rules. Certificates matching any rule are included but flagged with a WARN outcome. Surfaces via --strict-warnings (exit 3) and WARNING log messages.",
+          "items": { "$ref": "#/definitions/policy_rule" }
         }
       }
     },
@@ -313,9 +318,21 @@
         },
         "max_age_hours": {
           "type": "number",
-          "description": "Maximum age in hours before a CRL is considered stale.",
+          "description": "Maximum age (hours) of a CRL's thisUpdate before it is flagged stale. Increase for CAs that publish weekly CRLs (e.g. 168).",
           "minimum": 0,
           "default": 24
+        },
+        "min_remaining_hours": {
+          "type": "number",
+          "description": "Warn when a CRL's nextUpdate is less than this many hours away. Complements max_age_hours: use it to catch CRLs that are about to expire regardless of their issue date.",
+          "minimum": 0,
+          "default": 4
+        },
+        "refetch_before_expiry_hours": {
+          "type": "number",
+          "description": "Skip re-fetching a CRL that still has more than this many hours of validity remaining. 0 (default) means always re-fetch. Set to e.g. 48 to avoid unnecessary requests for CAs that publish weekly CRLs.",
+          "minimum": 0,
+          "default": 0
         },
         "verify_tls": {
           "type": "boolean",

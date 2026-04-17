@@ -268,9 +268,12 @@ def _build_profile(cfg, profile_name, dry_run=False, skip_crls=False, do_report=
         crl_mgr = CRLManager(profile_cfg.crl, profile_cfg.output_path)
         click.echo("  Fetching CRLs...")
         crl_result = crl_mgr.update_crls(accepted, dry_run=dry_run)
-        click.echo("  CRLs: {} updated, {} failed, {} no URL".format(
+        crl_summary = "  CRLs: {} updated, {} failed, {} no URL".format(
             len(crl_result.updated), len(crl_result.failed), len(crl_result.missing)
-        ))
+        )
+        if crl_result.skipped:
+            crl_summary += ", {} skipped (still fresh)".format(len(crl_result.skipped))
+        click.echo(crl_summary)
         for err in crl_result.errors:
             click.echo("  CRL WARNING: {}".format(err), err=True)
         warned += len(crl_result.failed)
@@ -525,9 +528,12 @@ def fetch_crls(ctx, profiles, dry_run):
         certs = _load_profile_certs(cfg, pname)
         crl_mgr = CRLManager(profile_cfg.crl, profile_cfg.output_path)
         result = crl_mgr.update_crls(certs, dry_run=dry_run)
-        click.echo("  Updated: {}  Failed: {}  No URL: {}".format(
+        summary = "  Updated: {}  Failed: {}  No URL: {}".format(
             len(result.updated), len(result.failed), len(result.missing)
-        ))
+        )
+        if result.skipped:
+            summary += "  Skipped (fresh): {}".format(len(result.skipped))
+        click.echo(summary)
         for err in result.errors:
             click.echo("  {}".format(err), err=True)
 
@@ -596,9 +602,12 @@ def refresh(ctx, profiles, dry_run, report, strict_warnings):
                 certs = _load_profile_certs(cfg, pname)
                 crl_mgr = CRLManager(profile_cfg.crl, profile_cfg.output_path)
                 crl_result = crl_mgr.update_crls(certs, dry_run=dry_run)
-                click.echo("  CRLs: {} updated, {} failed, {} no URL".format(
+                crl_line = "  CRLs: {} updated, {} failed, {} no URL".format(
                     len(crl_result.updated), len(crl_result.failed), len(crl_result.missing)
-                ))
+                )
+                if crl_result.skipped:
+                    crl_line += ", {} skipped (still fresh)".format(len(crl_result.skipped))
+                click.echo(crl_line)
                 for err in crl_result.errors:
                     click.echo("  CRL WARNING: {}".format(err), err=True)
                 total_warned += len(crl_result.failed)
