@@ -111,10 +111,10 @@ pip3 install -e ".[dev]"
 
 ## Quick start
 
-1. Create a config file (see `examples/`):
+1. Create a config file:
 
 ```bash
-cp examples/config-minimal.yaml /etc/crab/config.yaml
+crabctl init-config -o /etc/crab/config.yaml
 # Edit to set your source paths and output_path
 ```
 
@@ -146,8 +146,10 @@ Commands:
   fetch-crls    Fetch or refresh CRLs for a profile.
   status        Report cert counts, expiry, and CRL freshness without network I/O.
   show-config   Dump the resolved configuration.
+  init-config   Write a template crab.yaml to stdout or a file.
   ca            CA management sub-commands (init, intermediate, show).
-  cert          Certificate sub-commands (issue, revoke, list).
+  cert          Certificate sub-commands (issue, revoke, list, renew, sign).
+  pki           Declarative PKI hierarchy sub-commands (build, init-config).
 ```
 
 `--output-format json` switches all command output to machine-readable JSON.
@@ -673,6 +675,82 @@ crabctl cert sign --ca ./my-ca --csr svc.csr --profile server --days 365
 # Add SANs that were not in the CSR
 crabctl cert sign --ca ./my-ca --csr svc.csr \
     --san DNS:svc.internal --san IP:10.0.0.5
+```
+
+### `crabctl pki build` — declarative PKI hierarchy
+
+Build an entire CA hierarchy — root, intermediates, and leaf certificates —
+from a single `pki.yaml` file:
+
+```
+crabctl pki build [PKI_CONFIG]
+
+  PKI_CONFIG     Path to a pki.yaml file (default: pki.yaml)
+
+  --dry-run      Preview what would be created without writing any files
+  --force-certs  Re-issue leaf certificates that already exist on disk.
+                 CA directories are never regenerated regardless of this flag.
+```
+
+The build is **idempotent** — safe to re-run.  Existing CA directories are
+always skipped (regenerating a CA would invalidate all previously issued
+certificates).  Existing leaf cert files are skipped unless `--force-certs`
+is given.  Hierarchy depth is unlimited.
+
+```bash
+# Generate a template
+crabctl pki init-config -o pki.yaml
+
+# Edit pki.yaml, then build the full hierarchy in one command
+crabctl pki build pki.yaml
+
+# Preview without touching the filesystem
+crabctl pki build pki.yaml --dry-run
+
+# Re-issue all leaf certs (e.g. after expiry) without touching CAs
+crabctl pki build pki.yaml --force-certs
+```
+
+Example `pki.yaml`:
+
+```yaml
+version: 1
+
+root:
+  dir: ./pki/root-ca
+  cn: "My Project Root CA"
+  key_type: ecdsa-p256
+  days: 3650
+
+  intermediates:
+    - dir: ./pki/issuing-ca
+      cn: "My Project Issuing CA"
+      key_type: ecdsa-p256
+      days: 1825
+      path_length: 0
+
+      certs:
+        - cn: host.example.com
+          profile: server
+          days: 365
+          san:
+            - DNS:host.example.com
+            - DNS:host.internal
+
+        - cn: alice
+          profile: client
+          days: 365
+          san:
+            - EMAIL:alice@example.com
+```
+
+### `crabctl init-config` — generate a crab.yaml template
+
+```bash
+crabctl init-config               # full annotated reference → stdout
+crabctl init-config --minimal     # minimal working example → stdout
+crabctl init-config -o crab.yaml  # write to file
+crabctl init-config -o crab.yaml --force  # overwrite existing
 ```
 
 ### Adding your test CA to a crab profile

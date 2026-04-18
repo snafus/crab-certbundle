@@ -11,6 +11,33 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.2] — 2026-04-18
+
+### Added
+
+- **`crabctl pki build PKI_CONFIG`** — declarative PKI hierarchy builder.
+  Reads a `pki.yaml` file and creates the described root CA, intermediate
+  CAs, and leaf certificates in a single pass.  Idempotent: existing CA
+  directories are never overwritten; existing leaf cert files are skipped
+  unless `--force-certs` is given.  `--dry-run` previews what would be
+  created.  Hierarchy depth is unlimited (intermediates may contain further
+  intermediates).
+- **`crabctl pki init-config [-o FILE]`** — generate an annotated `pki.yaml`
+  template covering root CA, intermediate CA (`path_length`), leaf certs
+  (`server` / `client` / `grid-host`), SANs, `cdp_url`, and a commented-out
+  direct-root cert example.
+- **`crabctl init-config [--minimal] [-o FILE]`** — generate a template
+  `crab.yaml`.  `--minimal` emits a minimal working example; the default
+  emits the full annotated reference covering all current config options
+  (`warn:` rules, CRL cache-control, `logging.format: json`, bundle/pkcs12
+  output, env-var interpolation).
+- `crab/pki_config.py` — `load_pki_config`, `build_pki_hierarchy`,
+  `BuildResult`, `PKIConfigError` (new public API).
+- `crab/templates.py` — `CONFIG_TEMPLATE_MINIMAL`, `CONFIG_TEMPLATE_FULL`,
+  `PKI_TEMPLATE` (new public API).
+
+---
+
 ## [0.4.1] — 2026-04-17
 
 ### Fixed
@@ -349,7 +376,8 @@ Initial public release.
 
 ---
 
-[Unreleased]: https://github.com/snafus/crab-crab/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/snafus/crab-crab/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/snafus/crab-crab/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/snafus/crab-crab/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/snafus/crab-crab/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/snafus/crab-crab/compare/v0.2.0...v0.3.0
