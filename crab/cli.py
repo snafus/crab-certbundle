@@ -9,7 +9,8 @@ Commands:
   fetch-crls  Fetch or refresh CRLs for a profile.
   status      Show health summary for one or more profile output directories.
   show-config Dump the resolved configuration (useful for debugging)
-  init-config Write a template crab.yaml to stdout or a file.
+  init-config Write a template crab.yaml to stdout or a file
+  pki         Build a PKI hierarchy from a declarative pki.yaml config file.
 
 Global options:
   --config / -c               Path to config file (default: ./crab.yaml or /etc/crab/config.yaml)
@@ -43,7 +44,8 @@ from crab.pki import (
     PKIError, CADirectory,
 )
 from crab.rehash import CERT_HASH_FILE_RE
-from crab.templates import CONFIG_TEMPLATE_MINIMAL, CONFIG_TEMPLATE_FULL
+from crab.templates import CONFIG_TEMPLATE_MINIMAL, CONFIG_TEMPLATE_FULL, PKI_TEMPLATE
+from crab.pki_config import build_pki_hierarchy, load_pki_config, PKIConfigError
 from crab.reporting import (
     diff_cert_sets,
     render_diff_text,
@@ -1393,6 +1395,130 @@ def cert_list(ctx, ca_dir, show_revoked):
         len(records),
         sum(1 for r in records if r.get("revoked")),
     ))
+
+
+# ---------------------------------------------------------------------------
+# pki — declarative PKI hierarchy commands
+# ---------------------------------------------------------------------------
+
+@main.group("pki")
+def pki_group():
+    """Build a PKI hierarchy from a declarative YAML config file.
+
+    \b
+    Quick start:
+        crabctl pki init-config -o pki.yaml   # generate a template
+        crabctl pki build pki.yaml            # create the hierarchy
+    """
+
+
+@pki_group.command("build")
+@click.argument("pki_config", metavar="PKI_CONFIG", default="pki.yaml",
+                type=click.Path(exists=True))
+@click.option(
+    "--dry-run", is_flag=True, default=False,
+    help="Preview what would be created without writing any files.",
+)
+@click.option(
+    "--force-certs", is_flag=True, default=False,
+    help="Re-issue leaf certificates that already exist on disk. "
+         "CA directories are never regenerated regardless of this flag.",
+)
+def pki_build(pki_config, dry_run, force_certs):
+    """Build or resume a PKI hierarchy from PKI_CONFIG.
+
+    Existing CA directories are always skipped (regenerating a CA
+    invalidates all previously issued certificates).  Existing leaf
+    certificates are skipped unless --force-certs is given.
+
+    \b
+    Examples:
+        crabctl pki build pki.yaml
+        crabctl pki build pki.yaml --dry-run
+        crabctl pki build pki.yaml --force-certs
+    """
+    try:
+        result = build_pki_hierarchy(
+            pki_config,
+            force_certs=force_certs,
+            dry_run=dry_run,
+        )
+    except PKIConfigError as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+    except (IOError, OSError) as exc:
+        click.echo("ERROR: {}".format(exc), err=True)
+        sys.exit(1)
+
+    prefix = "[dry-run] " if dry_run else ""
+
+    if result.cas_created:
+        for cn in result.cas_created:
+            click.echo("  {}Created CA:        {}".format(prefix, cn))
+    if result.cas_skipped:
+        for cn in result.cas_skipped:
+            click.echo("  Skipped CA:        {} (already exists)".format(cn))
+    if result.certs_issued:
+        for cn in result.certs_issued:
+            click.echo("  {}Issued cert:      {}".format(prefix, cn))
+    if result.certs_skipped:
+        for cn in result.certs_skipped:
+            click.echo("  Skipped cert:      {} (already exists)".format(cn))
+
+    if result.errors:
+        click.echo("", err=True)
+        for err in result.errors:
+            click.echo("  ERROR: {}".format(err), err=True)
+        sys.exit(1)
+
+    if not any([result.cas_created, result.cas_skipped,
+                result.certs_issued, result.certs_skipped]):
+        click.echo("Nothing to do.")
+
+    if not result.errors:
+        totals = "{} CA(s), {} cert(s)".format(
+            len(result.cas_created),
+            len(result.certs_issued),
+        )
+        if dry_run:
+            click.echo("\n[dry-run] Would create: {}.".format(totals))
+        else:
+            click.echo("\nDone: created {}.".format(totals))
+
+
+@pki_group.command("init-config")
+@click.option(
+    "--output", "-o", "output_file",
+    default=None,
+    type=click.Path(),
+    help="Write to FILE instead of stdout.",
+)
+@click.option(
+    "--force", is_flag=True, default=False,
+    help="Overwrite OUTPUT if it already exists.",
+)
+def pki_init_config(output_file, force):
+    """Write a template pki.yaml to stdout or a file.
+
+    \b
+    Examples:
+        crabctl pki init-config                # print to stdout
+        crabctl pki init-config -o pki.yaml   # write to file
+    """
+    if output_file is None:
+        click.echo(PKI_TEMPLATE, nl=False)
+        return
+
+    if os.path.exists(output_file) and not force:
+        click.echo(
+            "ERROR: '{}' already exists. Use --force to overwrite.".format(output_file),
+            err=True,
+        )
+        sys.exit(1)
+
+    with open(output_file, "w") as fh:
+        fh.write(PKI_TEMPLATE)
+    click.echo("PKI config template written to '{}'.".format(output_file))
 
 
 if __name__ == "__main__":
