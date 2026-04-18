@@ -70,7 +70,7 @@ sources:
   # IGTF trust anchors fetched directly from dl.igtf.net over HTTPS
   igtf-online:
     type: igtf
-    url: "https://dl.igtf.net/distribution/igtf/current/accredited/igtf-preinstalled-bundle-classic-1.120.tar.gz"
+    url: "https://dl.igtf.net/distribution/igtf/current/accredited/igtf-preinstalled-bundle-classic.tar.gz"
     cache_dir: "${CRAB_CACHE_DIR:-/var/cache/crab}"
     policies:
       - classic
@@ -78,7 +78,7 @@ sources:
   # IGTF trust anchors from a downloaded tarball
   igtf-tarball:
     type: igtf
-    tarball: /var/cache/crab/igtf-preinstalled-bundle-classic-1.120.tar.gz
+    tarball: /var/cache/crab/igtf-preinstalled-bundle-classic.tar.gz
     policies:
       - classic
 
