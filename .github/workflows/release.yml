@@ -216,6 +216,7 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "CRAB ${{ github.ref_name }}" \
             --notes-file "${{ steps.changelog.outputs.notes_file }}" \
+            --clobber \
             dist/el8/**/*.rpm \
             dist/el9/**/*.rpm \
             dist/deb/*.deb
