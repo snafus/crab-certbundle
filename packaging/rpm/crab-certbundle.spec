@@ -12,7 +12,7 @@
 #     --define "_sourcedir $(pwd)/rpmbuild/SOURCES"
 
 Name:           crab-certbundle
-Version:        0.3.0
+Version:        0.4.1
 Release:        1%{?dist}
 Summary:        OpenSSL-style CA certificate directory builder for research infrastructure
 
@@ -172,6 +172,16 @@ install -m 0644 examples/*.yaml %{buildroot}%{_datadir}/%{name}/examples/
 %systemd_postun_with_restart crabctl.timer
 
 %changelog
+* Sat Apr 18 2026 snafus <snafus@users.noreply.github.com> - 0.4.1-1
+- Bug fixes: validate NotADirectoryError on bundle/pkcs12 output paths (#4)
+- Bug fixes: trailing slash in output_path corrupts staging/backup paths (#5)
+
+* Thu Apr 17 2026 snafus <snafus@users.noreply.github.com> - 0.4.0-1
+- cert renew: revoke-and-reissue from existing cert parameters
+- cert sign --csr: CSR-based issuance, private key never enters CRAB
+- Fix: renew_cert issue-before-revoke ordering (was data-loss risk)
+- Fix: cert_renew CLI datetime compat with cryptography >= 42
+
 * Thu Apr 16 2026 snafus <snafus@users.noreply.github.com> - 0.3.0-1
 - Operational observability: crabctl status, --log-format json, --strict-warnings exit code 3
 - Parallel CRL fetching via ThreadPoolExecutor (max_workers configurable)
