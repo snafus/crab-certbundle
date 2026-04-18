@@ -6,7 +6,7 @@ compatible with XRootD, dCache clients, curl/OpenSSL consumers, and similar midd
 """
 
 __version__ = "0.4.2"
-__author__ = "SRCNet Infrastructure"
+__author__ = "snafus"
 __license__ = "Apache-2.0"
 
 

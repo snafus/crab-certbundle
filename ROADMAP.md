@@ -56,7 +56,7 @@ Core trust-directory pipeline, complete and tested.
 - ✅ `systemd` service + daily timer (04:00, 30-min jitter, `Persistent=true`)
 - ✅ Dockerfile (Rocky Linux 8 base)
 - ✅ RPM spec (`crab-certbundle`) for EL8 and EL9
-- ✅ Example configs: minimal, full, SRCNet
+- ✅ Example configs: minimal, full, grid
 - ✅ `docs/ARCHITECTURE.md`
 - ✅ `README.md`, `CHANGELOG.md`
 

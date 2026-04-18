@@ -308,7 +308,7 @@ Initial public release.
 - `tox.ini` targeting Python 3.6–3.11
 - `Dockerfile` (Rocky Linux 8 base for EL-compatible testing)
 - `systemd/crab.service` + `crab.timer` (daily 04:00, 30 min jitter)
-- Example configs: `config-full.yaml`, `config-minimal.yaml`, `config-srcnet.yaml`
+- Example configs: `config-full.yaml`, `config-minimal.yaml`, `config-grid.yaml`
 - `docs/ARCHITECTURE.md` covering pipeline, hash strategy, atomic swap,
   policy model, IGTF integration, Python 3.6 compatibility, security notes
 

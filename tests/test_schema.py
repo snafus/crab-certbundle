@@ -88,7 +88,7 @@ def test_schema_definitions_cover_profile_and_policy():
 @pytest.mark.parametrize("filename", [
     "config-minimal.yaml",
     "config-full.yaml",
-    "config-srcnet.yaml",
+    "config-grid.yaml",
 ])
 def test_example_config_validates(filename):
     schema = _load_schema()

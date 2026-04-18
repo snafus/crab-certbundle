@@ -1,7 +1,7 @@
 Source: crab-certbundle
 Section: admin
 Priority: optional
-Maintainer: SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>
+Maintainer: snafus <snafus@users.noreply.github.com>
 Build-Depends: debhelper-compat (= 13),
                python3 (>= 3.6),
                python3-pip,

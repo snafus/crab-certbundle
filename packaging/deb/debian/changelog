@@ -7,7 +7,7 @@ crab-certbundle (0.4.2-1) unstable; urgency=medium
     - crabctl pki init-config: generate an annotated pki.yaml template
     - crabctl init-config: generate a crab.yaml template (--minimal / full)
 
- -- SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>  Sat, 18 Apr 2026 00:00:00 +0000
+ -- snafus <snafus@users.noreply.github.com>  Sat, 18 Apr 2026 00:00:00 +0000
 
 crab-certbundle (0.4.1-1) unstable; urgency=medium
 
@@ -18,7 +18,7 @@ crab-certbundle (0.4.1-1) unstable; urgency=medium
       paths (OSError EINVAL / FileNotFoundError on os.rename); normalise
       output_path and staging_path with os.path.normpath at construction (#5)
 
- -- SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>  Sat, 18 Apr 2026 00:00:00 +0000
+ -- snafus <snafus@users.noreply.github.com>  Sat, 18 Apr 2026 00:00:00 +0000
 
 crab-certbundle (0.4.0-1) unstable; urgency=medium
 
@@ -29,7 +29,7 @@ crab-certbundle (0.4.0-1) unstable; urgency=medium
     - Fix: renew_cert revoke-before-issue ordering (data-loss risk)
     - Fix: cert_renew CLI datetime compat with cryptography >= 42
 
- -- SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>  Fri, 17 Apr 2026 00:00:00 +0000
+ -- snafus <snafus@users.noreply.github.com>  Fri, 17 Apr 2026 00:00:00 +0000
 
 crab-certbundle (0.3.0-1) unstable; urgency=medium
 
@@ -41,7 +41,7 @@ crab-certbundle (0.3.0-1) unstable; urgency=medium
     - Parallel CRL fetching (ThreadPoolExecutor, max_workers configurable)
     - 749 tests passing across EL8/EL9, Ubuntu 22.04/24.04
 
- -- SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>  Thu, 16 Apr 2026 00:00:00 +0000
+ -- snafus <snafus@users.noreply.github.com>  Thu, 16 Apr 2026 00:00:00 +0000
 
 crab-certbundle (0.2.0-1) unstable; urgency=medium
 
@@ -50,10 +50,10 @@ crab-certbundle (0.2.0-1) unstable; urgency=medium
     registry refactor, bug fixes (file_mode parsing, diff exit code,
     silent parse errors, description key).
 
- -- SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>  Wed, 15 Apr 2026 00:00:00 +0000
+ -- snafus <snafus@users.noreply.github.com>  Wed, 15 Apr 2026 00:00:00 +0000
 
 crab-certbundle (0.1.0-1) unstable; urgency=medium
 
   * Initial Debian packaging.
 
- -- SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>  Sat, 12 Apr 2026 00:00:00 +0000
+ -- snafus <snafus@users.noreply.github.com>  Sat, 12 Apr 2026 00:00:00 +0000

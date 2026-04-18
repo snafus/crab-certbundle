@@ -1,12 +1,12 @@
 ##
-## crab — SRCNet-style configuration
+## crab — grid research infrastructure configuration
 ##
 ## Builds three output directories:
 ##   1. grid/     — IGTF classic + IOTA for data-movement middleware
 ##   2. server/   — public CAs for server TLS validation
 ##   3. combined/ — both, for tools that need a single CApath
 ##
-## Designed to run as a daily systemd timer on SRCNet data nodes.
+## Designed to run as a daily systemd timer on grid data nodes.
 ##
 
 version: 1
@@ -29,7 +29,7 @@ sources:
     # Override with an explicit path if your bundle is non-standard:
     # path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 
-  srcnet-extra:
+  site-extra:
     type: local
     # Site-specific CAs (CERN Grid CA, national RIs, etc.) managed locally.
     # Place .pem files here and crab will include them automatically.
@@ -61,7 +61,7 @@ profiles:
     description: "Public CA trust store for server TLS validation"
     sources:
       - system-tls
-      - srcnet-extra
+      - site-extra
     output_path: /etc/crab/server
     staging_path: /var/lib/crab/staging/server
     atomic: true
@@ -77,7 +77,7 @@ profiles:
     sources:
       - igtf-classic
       - system-tls
-      - srcnet-extra
+      - site-extra
     output_path: /etc/crab/combined
     staging_path: /var/lib/crab/staging/combined
     atomic: true
