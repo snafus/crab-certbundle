@@ -825,21 +825,106 @@ paste for a given profile name.
 
 ## Scheduled refresh
 
-### systemd timer
+Two unit files are provided: `crabctl.service` (a oneshot service that runs
+the build) and `crabctl.timer` (fires daily at 04:00 with up to 30 minutes
+of random jitter so cluster nodes don't all hit dl.igtf.net at once).
+
+### RPM / deb package installs
+
+The package installs the unit files automatically.  After placing your config
+at `/etc/crab/config.yaml`, enable the timer:
 
 ```bash
-cp systemd/crab.service systemd/crab.timer /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now crab.timer
+# Create the config (if you haven't already)
+crabctl init-config -o /etc/crab/config.yaml
+
+# Enable and start the timer
+systemctl enable --now crabctl.timer
+
+# Run once immediately to verify
+systemctl start crabctl.service
+journalctl -u crabctl.service -f
 ```
 
-### cron
+### Manual / pipx installs
+
+Copy the unit files from the source tree, then follow the same steps:
+
+```bash
+# Install unit files
+install -m 644 systemd/crab.service /etc/systemd/system/crabctl.service
+install -m 644 systemd/crab.timer   /etc/systemd/system/crabctl.timer
+
+# Create required directories
+install -d /etc/crab /var/lib/crab/staging /var/cache/crab /var/log/crab
+
+# Create the config
+crabctl init-config -o /etc/crab/config.yaml
+
+# Enable
+systemctl daemon-reload
+systemctl enable --now crabctl.timer
+
+# Verify
+systemctl start crabctl.service
+journalctl -u crabctl.service -f
+```
+
+### Checking status
+
+```bash
+systemctl status crabctl.timer          # next scheduled run
+systemctl list-timers crabctl.timer     # last + next trigger times
+journalctl -u crabctl.service --since "24 hours ago"
+crabctl status                          # cert counts, expiry, CRL freshness
+```
+
+### Customising the schedule
+
+Edit `/etc/systemd/system/crabctl.timer` (or use a drop-in):
+
+```bash
+systemctl edit crabctl.timer
+```
+
+```ini
+[Timer]
+OnCalendar=*-*-* 06:30:00   # change run time
+RandomizedDelaySec=3600      # spread over 1 hour instead of 30 min
+```
+
+```bash
+systemctl daemon-reload
+systemctl restart crabctl.timer
+```
+
+### Hardening
+
+The service unit runs as root by default (needed to write to
+`/etc/grid-security/certificates`).  If your `output_path` is owned by
+another user, set `User=` and `Group=` in the unit and adjust
+`ReadWritePaths=` accordingly:
+
+```bash
+systemctl edit crabctl.service
+```
+
+```ini
+[Service]
+User=crab
+Group=crab
+ReadWritePaths=/srv/crab/output
+ReadWritePaths=/var/cache/crab
+```
+
+### cron alternative
+
+If you prefer cron over systemd timers:
 
 ```cron
-0 4 * * *  root  crabctl --config /etc/crab/config.yaml build 2>&1 | logger -t crabctl
+# /etc/cron.d/crabctl
+0 4 * * *  root  /usr/bin/crabctl --config /etc/crab/config.yaml build 2>&1 | logger -t crabctl
 ```
-
-See `systemd/README.md` for full installation instructions.
 
 ---
 
