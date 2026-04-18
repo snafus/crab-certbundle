@@ -12,9 +12,10 @@ It combines:
 - **Public CA roots** (system bundle, custom directories)
 - **Optional CRLs** fetched from CDP extensions or IGTF `.info` files
 
-into one or more named output profiles, each an OpenSSL-compatible CApath
-directory that can be used directly by any software reading
-`/etc/grid-security/certificates` or a similar path.
+into one or more named output profiles. Each profile can produce:
+- an OpenSSL-compatible **CApath directory** (`/etc/grid-security/certificates`)
+- a flat **PEM bundle** file (for curl, Python requests, etc.)
+- a **PKCS#12 truststore** (for Java, .NET, Tomcat)
 
 ---
 
@@ -346,6 +347,47 @@ profiles:
 `include` list → explicit `exclude` list → `warn` list → default INCLUDE.
 A certificate matching `warn` is included in the output but counts toward
 `--strict-warnings` exit code 3.
+
+**Output formats** — set `output_format:` in a profile (default `capath`):
+
+| Format | Output | Use with |
+|---|---|---|
+| `capath` | Hashed directory — one file per cert, named `<hash>.0` | XRootD, dCache, gfal2, `SSL_CERT_DIR`, `curl --capath` |
+| `bundle` | Single concatenated PEM file | `curl --cacert`, Python `requests`, anything reading a flat CA bundle |
+| `pkcs12` | Binary PKCS#12 truststore (CA certs only, no private key) | Java (`-Djavax.net.ssl.trustStore`), .NET, Tomcat |
+
+```yaml
+profiles:
+  # OpenSSL hashed directory (default)
+  grid:
+    output_format: capath          # can be omitted — this is the default
+    output_path: /etc/grid-security/certificates
+    rehash: auto                   # auto | openssl | python | none
+    include_crls: true
+    include_igtf_meta: true        # write .info / .signing_policy files
+
+  # Flat PEM bundle — same sources, different format
+  bundle:
+    output_format: bundle
+    output_path: /etc/crab/ca-bundle.pem
+    annotate_bundle: true          # prepend # Subject/Issuer/Expires comments
+                                   # (ignored by all PEM consumers; human-readable only)
+
+  # PKCS#12 truststore for Java / .NET
+  truststore:
+    output_format: pkcs12
+    output_path: /etc/crab/truststore.p12
+    pkcs12_password: ""            # omit or set "" for unencrypted
+```
+
+Notes:
+- `include_crls` and `include_igtf_meta` only apply to `capath`; they are
+  ignored for `bundle` and `pkcs12`.
+- `crabctl validate` only supports `capath` profiles; `bundle` and `pkcs12`
+  profiles are skipped with an explanatory message. Use `crabctl list` to
+  inspect a bundle file.
+- Multiple profiles can share the same sources and produce all three formats
+  in one `crabctl build` run.
 
 **CRL cache-control** keys (under a profile or global `crl_config`):
 
