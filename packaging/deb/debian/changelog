@@ -1,3 +1,25 @@
+crab-certbundle (0.4.1-1) unstable; urgency=medium
+
+  * 0.4.1 bug-fix release.
+    - validate: fix NotADirectoryError crash on bundle/pkcs12 output paths;
+      non-directory profiles now skipped with explanatory message (#4)
+    - output: fix trailing slash in output_path corrupting staging and backup
+      paths (OSError EINVAL / FileNotFoundError on os.rename); normalise
+      output_path and staging_path with os.path.normpath at construction (#5)
+
+ -- SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>  Sat, 18 Apr 2026 00:00:00 +0000
+
+crab-certbundle (0.4.0-1) unstable; urgency=medium
+
+  * 0.4.0 release: certificate lifecycle commands.
+    - cert renew: revoke-and-reissue using parameters from existing cert;
+      --days, --reuse-key, --force; atomic-safe (issue before revoke)
+    - cert sign --csr: CSR-based issuance; private key never enters CRAB
+    - Fix: renew_cert revoke-before-issue ordering (data-loss risk)
+    - Fix: cert_renew CLI datetime compat with cryptography >= 42
+
+ -- SRCNet Infrastructure <srcnet-infrastructure@skatelescope.org>  Fri, 17 Apr 2026 00:00:00 +0000
+
 crab-certbundle (0.3.0-1) unstable; urgency=medium
 
   * 0.3.0 release: operational observability milestone.
