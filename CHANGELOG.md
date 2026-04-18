@@ -11,6 +11,37 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.3] — 2026-04-18
+
+### Added
+
+- **Declarative `pki.yaml` mode for Docker Compose** — `compose-pki.sh` now
+  auto-detects `/etc/crab/pki.yaml` (override with `CRAB_PKI_CONFIG`) and
+  delegates the `init` command to `crabctl pki build` instead of the
+  imperative env-var path.  The two modes coexist: declarative takes priority
+  when the file is present; imperative is the unchanged fallback.
+- **`CRAB_FORCE_CERTS`** env var for the PKI init-container — passes
+  `--force-certs` to `crabctl pki build` to re-issue leaf certs without
+  rebuilding CAs (e.g. after a rotation).
+- **`examples/compose-pki.yaml`** — Compose-tailored `pki.yaml` template with
+  CA dirs under `/pki`, covering `db`, `api`, and `worker` services.
+
+### Changed
+
+- `docker/Dockerfile.pki`: `CRAB_PKI_CONFIG` and `CRAB_FORCE_CERTS` added to
+  `ENV` defaults and documented in header comments.
+- `examples/docker-compose.pki.yml`: declarative volume mount shown; both
+  modes documented in header.
+
+### Chore
+
+- Replace `SRCNet Infrastructure` authorship with `snafus` in
+  `crab/__init__.py`, `setup.cfg`, Debian packaging, and RPM spec.
+- Rename `examples/config-srcnet.yaml` → `config-grid.yaml`; update internal
+  source name `srcnet-extra` → `site-extra`.
+
+---
+
 ## [0.4.2] — 2026-04-18
 
 ### Added
@@ -376,7 +407,8 @@ Initial public release.
 
 ---
 
-[Unreleased]: https://github.com/snafus/crab-crab/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/snafus/crab-crab/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/snafus/crab-crab/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/snafus/crab-crab/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/snafus/crab-crab/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/snafus/crab-crab/compare/v0.3.0...v0.4.0

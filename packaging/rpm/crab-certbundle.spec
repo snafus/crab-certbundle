@@ -12,7 +12,7 @@
 #     --define "_sourcedir $(pwd)/rpmbuild/SOURCES"
 
 Name:           crab-certbundle
-Version:        0.4.2
+Version:        0.4.3
 Release:        1%{?dist}
 Summary:        OpenSSL-style CA certificate directory builder for research infrastructure
 
@@ -172,6 +172,12 @@ install -m 0644 examples/*.yaml %{buildroot}%{_datadir}/%{name}/examples/
 %systemd_postun_with_restart crabctl.timer
 
 %changelog
+* Sat Apr 18 2026 snafus <snafus@users.noreply.github.com> - 0.4.3-1
+- pki.yaml declarative mode for Docker Compose PKI init-container
+- compose-pki.sh auto-detects /etc/crab/pki.yaml; delegates to crabctl pki build
+- New examples/compose-pki.yaml template for Compose services
+- Replace SRCNet Infrastructure authorship with snafus; rename config-srcnet.yaml to config-grid.yaml
+
 * Sat Apr 18 2026 snafus <snafus@users.noreply.github.com> - 0.4.2-1
 - crabctl pki build: declarative PKI hierarchy builder from pki.yaml
 - crabctl pki init-config: generate annotated pki.yaml template

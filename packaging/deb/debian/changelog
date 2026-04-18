@@ -1,3 +1,15 @@
+crab-certbundle (0.4.3-1) unstable; urgency=medium
+
+  * 0.4.3 release: declarative pki.yaml support for Docker Compose.
+    - compose-pki.sh: auto-detects /etc/crab/pki.yaml (CRAB_PKI_CONFIG)
+      and delegates init to `crabctl pki build`; CRAB_FORCE_CERTS support
+    - docker/Dockerfile.pki: CRAB_PKI_CONFIG and CRAB_FORCE_CERTS env defaults
+    - examples/compose-pki.yaml: new Compose-tailored pki.yaml template
+    - chore: replace SRCNet Infrastructure authorship with snafus;
+      rename config-srcnet.yaml to config-grid.yaml
+
+ -- snafus <snafus@users.noreply.github.com>  Sat, 18 Apr 2026 00:00:00 +0000
+
 crab-certbundle (0.4.2-1) unstable; urgency=medium
 
   * 0.4.2 release: declarative PKI and config template commands.
