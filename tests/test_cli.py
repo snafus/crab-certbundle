@@ -1204,3 +1204,59 @@ class TestDiffJsonExitCode:
         assert data["summary"]["added"] == 0
         assert data["summary"]["removed"] == 0
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# init-config
+# ---------------------------------------------------------------------------
+
+class TestInitConfig:
+    def test_full_to_stdout(self, runner):
+        result = runner.invoke(main, ["init-config"])
+        assert result.exit_code == 0
+        assert "version: 1" in result.output
+        assert "sources:" in result.output
+        assert "profiles:" in result.output
+        assert "warn:" in result.output
+        assert "min_remaining_hours" in result.output
+
+    def test_minimal_to_stdout(self, runner):
+        result = runner.invoke(main, ["init-config", "--minimal"])
+        assert result.exit_code == 0
+        assert "version: 1" in result.output
+        assert "sources:" in result.output
+        assert "profiles:" in result.output
+        # Minimal template is shorter than full
+        assert len(result.output) < 600
+
+    def test_write_to_file(self, runner, tmp_path):
+        out = str(tmp_path / "crab.yaml")
+        result = runner.invoke(main, ["init-config", "-o", out])
+        assert result.exit_code == 0
+        assert os.path.isfile(out)
+        assert "version: 1" in open(out).read()
+        assert "Config template written to" in result.output
+
+    def test_refuses_overwrite_without_force(self, runner, tmp_path):
+        out = str(tmp_path / "crab.yaml")
+        open(out, "w").write("existing content")
+        result = runner.invoke(main, ["init-config", "-o", out])
+        assert result.exit_code == 1
+        assert "already exists" in result.output
+        assert open(out).read() == "existing content"
+
+    def test_force_overwrites(self, runner, tmp_path):
+        out = str(tmp_path / "crab.yaml")
+        open(out, "w").write("old")
+        result = runner.invoke(main, ["init-config", "-o", out, "--force"])
+        assert result.exit_code == 0
+        assert open(out).read() != "old"
+        assert "version: 1" in open(out).read()
+
+    def test_minimal_flag_with_file(self, runner, tmp_path):
+        out = str(tmp_path / "crab.yaml")
+        result = runner.invoke(main, ["init-config", "--minimal", "-o", out])
+        assert result.exit_code == 0
+        content = open(out).read()
+        assert "version: 1" in content
+        assert "--minimal" in content

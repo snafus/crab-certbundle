@@ -8,7 +8,8 @@ Commands:
   list        List certificates in a source, profile output, or directory.
   fetch-crls  Fetch or refresh CRLs for a profile.
   status      Show health summary for one or more profile output directories.
-  show-config Dump the resolved configuration (useful for debugging).
+  show-config Dump the resolved configuration (useful for debugging)
+  init-config Write a template crab.yaml to stdout or a file.
 
 Global options:
   --config / -c               Path to config file (default: ./crab.yaml or /etc/crab/config.yaml)
@@ -42,6 +43,7 @@ from crab.pki import (
     PKIError, CADirectory,
 )
 from crab.rehash import CERT_HASH_FILE_RE
+from crab.templates import CONFIG_TEMPLATE_MINIMAL, CONFIG_TEMPLATE_FULL
 from crab.reporting import (
     diff_cert_sets,
     render_diff_text,
@@ -732,6 +734,63 @@ def show_config(ctx):
         click.echo("    format: {}  atomic: {}  rehash: {}  crls: {}".format(
             prof.output_format, prof.atomic, prof.rehash, prof.include_crls
         ))
+
+
+# ---------------------------------------------------------------------------
+# init-config
+# ---------------------------------------------------------------------------
+
+@main.command("init-config")
+@click.option(
+    "--minimal", "flavor", flag_value="minimal",
+    help="Emit a minimal working config (fewer comments, fewer options).",
+)
+@click.option(
+    "--full", "flavor", flag_value="full", default=True,
+    help="Emit the full annotated reference config (default).",
+)
+@click.option(
+    "--output", "-o", "output_file",
+    default=None,
+    type=click.Path(),
+    help="Write to FILE instead of stdout.",
+)
+@click.option(
+    "--force", is_flag=True, default=False,
+    help="Overwrite OUTPUT if it already exists.",
+)
+def init_config(flavor, output_file, force):
+    """Write a template crab.yaml to stdout or a file.
+
+    Prints a commented configuration file that can be used as a starting
+    point.  Two variants are available:
+
+    \b
+      crabctl init-config            # full annotated reference (default)
+      crabctl init-config --minimal  # minimal working example
+
+    Write directly to a file:
+
+    \b
+      crabctl init-config -o crab.yaml
+      crabctl init-config --minimal -o /etc/crab/config.yaml
+    """
+    template = CONFIG_TEMPLATE_MINIMAL if flavor == "minimal" else CONFIG_TEMPLATE_FULL
+
+    if output_file is None:
+        click.echo(template, nl=False)
+        return
+
+    if os.path.exists(output_file) and not force:
+        click.echo(
+            "ERROR: '{}' already exists. Use --force to overwrite.".format(output_file),
+            err=True,
+        )
+        sys.exit(1)
+
+    with open(output_file, "w") as fh:
+        fh.write(template)
+    click.echo("Config template written to '{}'.".format(output_file))
 
 
 # ---------------------------------------------------------------------------
