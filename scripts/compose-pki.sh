@@ -8,7 +8,21 @@
 #   compose-pki.sh status                  Show CA info and cert expiry for all services
 #   compose-pki.sh clean                   Delete the entire PKI directory (destructive)
 #
-# Configuration — override with environment variables or edit the defaults below:
+# Configuration — two modes:
+#
+#   DECLARATIVE (recommended): mount a pki.yaml and set CRAB_PKI_CONFIG.
+#     The 'init' command delegates to `crabctl pki build` which is idempotent
+#     and driven entirely by the YAML file.  All hierarchy, cert SANs, key
+#     types, and validity periods are expressed in one version-controllable file.
+#
+#   CRAB_PKI_CONFIG     Path to a pki.yaml inside the container   [default: /etc/crab/pki.yaml]
+#                       Set to "" or remove the file to use imperative mode.
+#   CRAB_FORCE_CERTS    Pass --force-certs to pki build            [default: false]
+#
+#   IMPERATIVE (env-var driven): used when CRAB_PKI_CONFIG does not exist.
+#     Builds the hierarchy from the variables below.  Useful for quick setups
+#     where you don't want to manage a separate YAML file.
+#
 #   CRAB_PKI_DIR        Where to write the CA hierarchy         [default: ./pki]
 #   CRAB_SERVICES       Space-separated list of service names   [default: see below]
 #   CRAB_ROOT_CN        Root CA common name                     [default: Compose Root CA]
@@ -21,7 +35,7 @@
 #   CRAB_CERT_PROFILE   Leaf cert profile (server/client/grid-host) [default: server]
 #   CRAB_USE_INTERMEDIATE  Create an intermediate issuing CA (true/false) [default: true]
 #
-# Extra SANs per service:
+# Extra SANs per service (imperative mode only):
 #   Set CRAB_SAN_<SERVICE> to a space-separated list of additional SAN values.
 #   Example:  CRAB_SAN_api="DNS:api.internal IP:10.0.0.5"
 #   The service name itself (DNS:<service>) is always added automatically.
@@ -45,6 +59,15 @@ CERT_DAYS="${CRAB_CERT_DAYS:-365}"
 KEY_TYPE="${CRAB_KEY_TYPE:-ecdsa-p256}"
 CERT_PROFILE="${CRAB_CERT_PROFILE:-server}"
 USE_INTERMEDIATE="${CRAB_USE_INTERMEDIATE:-true}"
+
+# ── declarative mode ─────────────────────────────────────────────────────────
+# If CRAB_PKI_CONFIG points to a pki.yaml (or the default location exists),
+# the 'init' command delegates to `crabctl pki build` instead of the
+# imperative env-var-driven path below.
+CRAB_PKI_CONFIG="${CRAB_PKI_CONFIG:-/etc/crab/pki.yaml}"
+# Set CRAB_FORCE_CERTS=true to pass --force-certs to `crabctl pki build`
+# (re-issues leaf certs even if they already exist on disk).
+CRAB_FORCE_CERTS="${CRAB_FORCE_CERTS:-false}"
 
 # ── derived paths ────────────────────────────────────────────────────────────
 ROOT_CA="$PKI_DIR/root-ca"
@@ -86,6 +109,20 @@ cert_path() {
 # ── commands ─────────────────────────────────────────────────────────────────
 
 cmd_init() {
+    # ── Declarative mode ────────────────────────────────────────────────────
+    # If a pki.yaml exists (at CRAB_PKI_CONFIG or the default path), delegate
+    # entirely to `crabctl pki build`.  It is idempotent: existing CAs and
+    # certs are skipped automatically; --force-certs re-issues leaf certs.
+    if [[ -f "$CRAB_PKI_CONFIG" ]]; then
+        info "Declarative mode: building PKI hierarchy from $CRAB_PKI_CONFIG"
+        local build_flags=""
+        [[ "$CRAB_FORCE_CERTS" == "true" ]] && build_flags="--force-certs"
+        # shellcheck disable=SC2086
+        crabctl pki build "$CRAB_PKI_CONFIG" $build_flags
+        return
+    fi
+
+    # ── Imperative mode (env-var driven) ────────────────────────────────────
     if [[ -f "$ROOT_CA/ca-cert.pem" ]]; then
         warn "PKI already initialised at $PKI_DIR"
         warn "Run '$0 issue <service>' to add certs, or '$0 clean' then re-init."

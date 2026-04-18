@@ -16,18 +16,31 @@
 #   3. `depends_on` / `condition: service_completed_successfully` on each
 #      service so Docker Compose waits for certs before starting apps.
 #
-# Customisation:
-#   All CRAB_* variables are documented in scripts/compose-pki.sh.
-#   The minimal ones to set are CRAB_SERVICES and (optionally) CRAB_ORG.
+# ── Declarative mode (recommended) ──────────────────────────────────────────
+#   Copy examples/compose-pki.yaml to your project, edit it to match your
+#   services, then mount it into pki-init (see the volume below).
+#   The init container detects the file automatically and runs:
+#     crabctl pki build /etc/crab/pki.yaml
+#   All hierarchy, cert SANs, key types, and validity are in one YAML file.
 #
-# Re-issuing a single cert (e.g. after rotation or compromise):
+#   To add a new service: add a cert entry to your pki.yaml, then run:
+#     docker compose run --rm pki-init init
+#   Existing CAs and certs are skipped; only the new cert is issued.
 #
-#   docker compose run --rm pki-init revoke api
-#   docker compose restart api
+#   To re-issue all leaf certs (e.g. after a CA refresh):
+#     CRAB_FORCE_CERTS=true docker compose run --rm pki-init init
 #
-# Checking expiry:
+# ── Imperative mode (env-var driven) ────────────────────────────────────────
+#   Remove the pki.yaml volume mount and set CRAB_SERVICES plus the other
+#   CRAB_* variables documented in scripts/compose-pki.sh.
 #
-#   docker compose run --rm pki-init status
+# ── Operational commands (both modes) ───────────────────────────────────────
+#   Re-issue a single cert after revocation:
+#     docker compose run --rm pki-init revoke api
+#     docker compose restart api
+#
+#   Check cert expiry:
+#     docker compose run --rm pki-init status
 
 # ---------------------------------------------------------------------------
 # Volume shared between pki-init (write) and all application services (read)
@@ -47,11 +60,18 @@ services:
     restart: "no"                     # run once then exit; never restart
     volumes:
       - pki-data:/pki
+      # ── Declarative mode: mount your pki.yaml ─────────────────────────────
+      # Copy examples/compose-pki.yaml to your project root, edit it, then
+      # uncomment the line below.  No CRAB_* env vars needed.
+      # - ./compose-pki.yaml:/etc/crab/pki.yaml:ro
+      #
+      # ── Imperative mode: remove the mount above, set env vars below ────────
     environment:
       CRAB_PKI_DIR: /pki
-      # Space-separated list of Compose service names that need certs.
-      # Each name gets a DNS SAN matching that name so mutual TLS works
-      # across the Compose network.  Keep in sync with your services below.
+      # Declarative mode: set CRAB_FORCE_CERTS=true to re-issue leaf certs.
+      # CRAB_FORCE_CERTS: "true"
+      #
+      # Imperative mode variables (ignored when pki.yaml is mounted):
       CRAB_SERVICES: "db api worker"
       CRAB_ORG: "My Project"
       CRAB_ROOT_CN: "My Project Root CA"
@@ -59,8 +79,7 @@ services:
       CRAB_USE_INTERMEDIATE: "true"   # set to "false" to skip intermediate
       CRAB_KEY_TYPE: "ecdsa-p256"
       CRAB_CERT_DAYS: "365"
-      # Per-service extra SANs (optional).  Space-separated SAN values.
-      # The service name is always added automatically as DNS:<service>.
+      # Per-service extra SANs (imperative mode only):
       # CRAB_SAN_API: "DNS:api.internal IP:10.0.0.5"
 
 # ---------------------------------------------------------------------------
@@ -72,12 +91,14 @@ services:
 #   • receives its cert at a predictable path inside the volume
 #
 # Cert paths inside the volume (all read-only to application services):
-#   /pki/root-ca/ca-cert.pem              Trust anchor (configure in app)
-#   /pki/issuing-ca/issued/<svc>-cert.pem      Leaf certificate
-#   /pki/issuing-ca/issued/<svc>-key.pem       Private key (mode 0600)
-#   /pki/issuing-ca/issued/<svc>-fullchain.pem Leaf + intermediates (no root)
+#   /pki/root-ca/ca-cert.pem                    Trust anchor (configure in app)
+#   /pki/issuing-ca/issued/<svc>-cert.pem        Leaf certificate
+#   /pki/issuing-ca/issued/<svc>-key.pem         Private key (mode 0600)
+#   /pki/issuing-ca/issued/<svc>-fullchain.pem   Leaf + intermediate chain (no root)
 #
-# If USE_INTERMEDIATE=false, replace issuing-ca with root-ca in all paths.
+# These paths match the dir: entries in examples/compose-pki.yaml.
+# If you use imperative mode with CRAB_USE_INTERMEDIATE=false, replace
+# issuing-ca with root-ca in all paths.
 # ---------------------------------------------------------------------------
 
   db:

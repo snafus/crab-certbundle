@@ -1,0 +1,73 @@
+# compose-pki.yaml — declarative PKI hierarchy for Docker Compose
+#
+# Mount this file read-only into the pki-init container:
+#
+#   volumes:
+#     - ./compose-pki.yaml:/etc/crab/pki.yaml:ro
+#     - pki-data:/pki
+#
+# The init container picks it up automatically; no CRAB_* environment
+# variables are needed.  To re-issue leaf certs without rebuilding CAs:
+#
+#   CRAB_FORCE_CERTS=true docker compose run --rm pki-init init
+#
+# Cert paths written into the pki-data volume (mount at /run/pki in apps):
+#   /pki/root-ca/ca-cert.pem                        Trust anchor
+#   /pki/issuing-ca/issued/<service>-cert.pem        Leaf certificate
+#   /pki/issuing-ca/issued/<service>-key.pem         Private key (mode 0600)
+#   /pki/issuing-ca/issued/<service>-fullchain.pem   Leaf + intermediate chain
+#
+# To add a new service: add a cert entry here, then run:
+#   docker compose run --rm pki-init init
+# (existing CAs and certs are skipped; only the new cert is issued.)
+
+version: 1
+
+root:
+  dir: /pki/root-ca
+  cn: "Compose Root CA"
+  org: "Lab"
+  key_type: ecdsa-p256
+  days: 3650
+
+  intermediates:
+    - dir: /pki/issuing-ca
+      cn: "Compose Issuing CA"
+      org: "Lab"
+      key_type: ecdsa-p256
+      days: 1825
+      path_length: 0        # cannot sign further CAs below this one
+
+      certs:
+
+        - cn: db
+          profile: server
+          days: 365
+          san:
+            - DNS:db
+
+        - cn: api
+          profile: server
+          days: 365
+          san:
+            - DNS:api
+            # Uncomment to add extra names reachable by other services or clients:
+            # - DNS:api.internal
+            # - IP:10.0.0.5
+
+        - cn: worker
+          profile: server
+          days: 365
+          san:
+            - DNS:worker
+
+        # Add further services here — one entry per Compose service that needs
+        # a TLS certificate.  Re-run `docker compose run --rm pki-init init`
+        # to issue the new cert without touching existing ones.
+        #
+        # - cn: frontend
+        #   profile: server
+        #   days: 365
+        #   san:
+        #     - DNS:frontend
+        #     - DNS:localhost

@@ -9,7 +9,23 @@
 #
 # Or with a single buildx bake target (see docker/bake.hcl if present).
 #
-# Usage — standalone:
+# Usage — declarative mode (recommended):
+#   Mount a pki.yaml at /etc/crab/pki.yaml; compose-pki.sh will detect it
+#   automatically and delegate 'init' to `crabctl pki build`.
+#
+#   docker run --rm \
+#     -v ./examples/compose-pki.yaml:/etc/crab/pki.yaml:ro \
+#     -v pki-data:/pki \
+#     crab-pki:latest init
+#
+#   # Re-issue leaf certs without rebuilding CAs:
+#   docker run --rm \
+#     -v ./examples/compose-pki.yaml:/etc/crab/pki.yaml:ro \
+#     -v pki-data:/pki \
+#     -e CRAB_FORCE_CERTS=true \
+#     crab-pki:latest init
+#
+# Usage — imperative mode (env-var driven):
 #   docker run --rm -v pki-data:/pki \
 #     -e CRAB_SERVICES="db api worker" \
 #     crab-pki:latest init
@@ -57,7 +73,9 @@ ENV CRAB_PKI_DIR=/pki \
     CRAB_CERT_DAYS=365 \
     CRAB_KEY_TYPE=ecdsa-p256 \
     CRAB_CERT_PROFILE=server \
-    CRAB_USE_INTERMEDIATE=true
+    CRAB_USE_INTERMEDIATE=true \
+    CRAB_PKI_CONFIG=/etc/crab/pki.yaml \
+    CRAB_FORCE_CERTS=false
 
 ENTRYPOINT ["/usr/local/bin/compose-pki.sh"]
 # Default: initialise the hierarchy.  Override with other subcommands:
